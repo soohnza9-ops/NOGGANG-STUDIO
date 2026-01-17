@@ -1,15 +1,39 @@
-// VideoExporter.tsx ✅ 전체 교체본 (Portal로 StopConfirm 고정 + Worker + OffscreenCanvas + WebCodecs + webm-muxer)
-// - StopConfirm 모달을 createPortal(document.body)로 분리해서 "씬카드가 위로 올라와서 안눌림" 문제 해결
-// - importScripts / CDN fetch / MediaRecorder / previewCanvasRef 제거
-// - 워커는 module 타입 + esm.sh ESM import 사용
+
 
 import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
-import { Scene, VideoSettings, YouTubeMetadata, SceneTimelineEntry } from '../types';
+import { VideoSettings, YouTubeMetadata, SceneTimelineEntry } from '../types';
+
 import { Loader2, AlertCircle, Download, AlertTriangle, X } from 'lucide-react';
+type ElectronExportAPI = {
+ 
+  chooseExportDir: () => Promise<{ canceled: boolean; dirPath: string | null }>;
+
+  exportBegin: (args: {
+    width: number;
+    height: number;
+    fps: number;
+    totalFrames: number;
+    title: string;
+    outputDir: string;
+  }) => Promise<{ jobId: string }>;
+
+  exportWriteFrame: (args: { jobId: string; frameIndex: number; pngBytes: Uint8Array }) => Promise<void>;
+  exportWriteAudioWav: (args: { jobId: string; wavBytes: Uint8Array }) => Promise<void>;
+  exportFinalize: (args: { jobId: string }) => Promise<{ outputPath: string }>;
+  exportCancel: (args: { jobId: string }) => Promise<void>;
+};
+
+
+declare global {
+  interface Window {
+    NOGGANG_EXPORT?: ElectronExportAPI;
+  }
+}
+
 
 const VideoExporter: React.FC<{
-  scenes: Scene[];
+
   settings: VideoSettings;
   bgmUrl: string | null;
   bgmVolume: number;
@@ -26,7 +50,6 @@ const VideoExporter: React.FC<{
   exportProgress: number;
   setExportProgress: (v: number) => void;
 }> = ({
-  scenes,
   settings,
   bgmUrl,
   bgmVolume,
@@ -41,11 +64,15 @@ const VideoExporter: React.FC<{
   exportProgress,
   setExportProgress
 }) => {
+
   const [error, setError] = useState<string | null>(null);
   const [showStopConfirm, setShowStopConfirm] = useState(false);
-  const workerRef = useRef<Worker | null>(null);
 
-// ❌ 아래 useEffect 블록 전체 제거
+  const cancelRef = useRef(false);
+  const jobIdRef = useRef<string | null>(null);
+
+
+
 useEffect(() => {
   if (!showStopConfirm) return;
   const prev = document.body.style.overflow;
@@ -55,764 +82,600 @@ useEffect(() => {
   };
 }, [showStopConfirm]);
 
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-  const handleStopExport = () => {
+  const getBalancedLines = (
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    maxWidth: number,
+    subtitleSize: 'S' | 'M' | 'L'
+  ) => {
+    if (!text) return [];
+    const t = String(text)
+      .replace(/\r/g, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    if (!t) return [];
+
+    const ONE_LINE_RATIO = subtitleSize === 'S' ? 0.85 : subtitleSize === 'M' ? 0.92 : 0.98;
+
+    const fullW = ctx.measureText(t).width;
+    if (fullW <= maxWidth * ONE_LINE_RATIO) return [t];
+
+    const breaks: number[] = [];
+    for (let i = 1; i < t.length; i++) {
+      const prev = t[i - 1];
+      if (prev === ' ' || /[,.!?…)\]]/.test(prev)) breaks.push(i);
+    }
+
+    if (breaks.length === 0) {
+      const mid = Math.floor(t.length / 2);
+      return [t.slice(0, mid).trim(), t.slice(mid).trim()];
+    }
+
+    let best: { a: string; b: string; diff: number } | null = null;
+    for (const idx of breaks) {
+      const a = t.slice(0, idx).trim();
+      const b = t.slice(idx).trim();
+      if (!a || !b) continue;
+      const diff = Math.abs(ctx.measureText(a).width - ctx.measureText(b).width);
+      if (!best || diff < best.diff) best = { a, b, diff };
+    }
+    if (best) return [best.a, best.b];
+
+    const cut = breaks[Math.floor(breaks.length / 2)];
+    return [t.slice(0, cut).trim(), t.slice(cut).trim()];
+  };
+
+  const fillRoundRect = (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) => {
+    const radius = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+    ctx.beginPath();
+    // @ts-ignore
+    if (typeof (ctx as any).roundRect === 'function') (ctx as any).roundRect(x, y, w, h, radius);
+    else {
+      ctx.moveTo(x + radius, y);
+      ctx.arcTo(x + w, y, x + w, y + h, radius);
+      ctx.arcTo(x + w, y + h, x, y + h, radius);
+      ctx.arcTo(x, y + h, x, y, radius);
+      ctx.arcTo(x, y, x + w, y, radius);
+    }
+    ctx.closePath();
+    ctx.fill();
+  };
+
+  const imgCacheRef = useRef<Map<string, ImageBitmap>>(new Map());
+  const videoCacheRef = useRef<Map<string, HTMLVideoElement>>(new Map());
+  const videoCanvasRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
+
+  const getBitmapFromUrl = async (url: string) => {
+    const cache = imgCacheRef.current;
+    if (cache.has(url)) return cache.get(url)!;
+
+    const r = await fetch(url, { cache: 'force-cache' });
+    if (!r.ok) throw new Error('이미지 fetch 실패: ' + r.status);
+
+    const blob = await r.blob();
+    const bmp = await createImageBitmap(blob);
+    cache.set(url, bmp);
+    return bmp;
+  };
+
+  const ensureVideo = async (url: string) => {
+    const cache = videoCacheRef.current;
+    if (cache.has(url)) return cache.get(url)!;
+
+    const vid = document.createElement('video');
+    vid.crossOrigin = 'anonymous';
+    vid.preload = 'auto';
+    vid.muted = true;
+    (vid as any).playsInline = true;
+    vid.src = url;
+
+    await new Promise<void>((res, rej) => {
+      const onOk = () => {
+        cleanup();
+        res();
+      };
+      const onErr = () => {
+        cleanup();
+        rej(new Error('video load error'));
+      };
+      const cleanup = () => {
+        vid.removeEventListener('loadedmetadata', onOk);
+        vid.removeEventListener('error', onErr);
+      };
+      vid.addEventListener('loadedmetadata', onOk, { once: true });
+      vid.addEventListener('error', onErr, { once: true });
+      vid.load();
+    });
+
+    cache.set(url, vid);
+    return vid;
+  };
+
+  const seekVideoTo = async (vid: HTMLVideoElement, targetTime: number) => {
+    const dur = Number.isFinite(vid.duration) && vid.duration > 0 ? vid.duration : 0;
+    const t = Math.max(0, Math.min(dur || 0, targetTime));
+    if (!Number.isFinite(t)) return;
+
+    const diff = Math.abs((vid.currentTime || 0) - t);
+    if (diff < 0.01) return;
+
+    await new Promise<void>((resolve) => {
+      let done = false;
+
+      const cleanup = () => {
+        if (done) return;
+        done = true;
+        vid.removeEventListener('seeked', onSeeked);
+        clearTimeout(to);
+        resolve();
+      };
+
+      const onSeeked = () => cleanup();
+      const to = window.setTimeout(() => cleanup(), 800);
+
+      vid.addEventListener('seeked', onSeeked, { once: true });
+      try {
+        if (typeof (vid as any).fastSeek === 'function') (vid as any).fastSeek(t);
+        else vid.currentTime = t;
+      } catch {
+        cleanup();
+      }
+    });
+  };
+
+  const getVideoBitmapAt = async (url: string, sceneStart: number, sceneEnd: number, t: number) => {
+    const vid = await ensureVideo(url);
+
+    const sceneDur = Math.max(0.001, sceneEnd - sceneStart);
+    const dur = Number.isFinite(vid.duration) && vid.duration > 0 ? vid.duration : 0;
+    const p = Math.max(0, Math.min(1, (t - sceneStart) / sceneDur));
+    const target = dur > 0 ? p * dur : 0;
+
     try {
-      workerRef.current?.terminate();
+      if (vid.readyState < 2) {
+        await vid.play().catch(() => {});
+        vid.pause();
+      }
     } catch {}
-    workerRef.current = null;
+
+    await seekVideoTo(vid, target);
+
+    if (vid.readyState < 2 || vid.videoWidth <= 0 || vid.videoHeight <= 0) return null;
+
+    const cMap = videoCanvasRef.current;
+    let c = cMap.get(url);
+    if (!c) {
+      c = document.createElement('canvas');
+      cMap.set(url, c);
+    }
+    c.width = vid.videoWidth;
+    c.height = vid.videoHeight;
+
+    const cctx = c.getContext('2d');
+    if (!cctx) return null;
+
+    cctx.drawImage(vid, 0, 0, c.width, c.height);
+    const bmp = await createImageBitmap(c);
+    return bmp;
+  };
+
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+  const linearResample = (src: Float32Array, srcSR: number, dstSR: number) => {
+    if (srcSR === dstSR) return src;
+    const ratio = dstSR / srcSR;
+    const dstLen = Math.max(1, Math.round(src.length * ratio));
+    const dst = new Float32Array(dstLen);
+    for (let i = 0; i < dstLen; i++) {
+      const s = i / ratio;
+      const i0 = Math.floor(s);
+      const i1 = Math.min(i0 + 1, src.length - 1);
+      const frac = s - i0;
+      const a = src[i0] ?? 0;
+      const b = src[i1] ?? 0;
+      dst[i] = a * (1 - frac) + b * frac;
+    }
+    return dst;
+  };
+
+  const encodeWavMonoF32ToS16PCM = (samples: Float32Array, sampleRate: number) => {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const bytesPerSample = bitsPerSample / 8;
+    const blockAlign = numChannels * bytesPerSample;
+    const byteRate = sampleRate * blockAlign;
+    const dataSize = samples.length * bytesPerSample;
+
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    const writeStr = (off: number, s: string) => {
+      for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+    };
+
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeStr(8, 'WAVE');
+
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    let o = 44;
+    for (let i = 0; i < samples.length; i++) {
+      const s = clamp(samples[i], -1, 1);
+      const v = s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
+      view.setInt16(o, v, true);
+      o += 2;
+    }
+
+    return new Uint8Array(buffer);
+  };
+
+  const mixSpeechAndBgmToWav = async (totalDuration: number) => {
+    const dstSR = 48000;
+    const totalSamples = Math.max(1, Math.round(totalDuration * dstSR));
+    const out = new Float32Array(totalSamples);
+
+    if (fullSpeechAudioBuffer) {
+      const s0 = fullSpeechAudioBuffer.getChannelData(0);
+      const speech = new Float32Array(s0.length);
+      speech.set(s0);
+      const sRes = linearResample(speech, fullSpeechAudioBuffer.sampleRate || 24000, dstSR);
+
+      const n = Math.min(out.length, sRes.length);
+      for (let i = 0; i < n; i++) out[i] += sRes[i] * 1.0;
+    }
+
+    if (bgmUrl) {
+      try {
+        const res = await fetch(bgmUrl);
+        if (res.ok) {
+          const arrayBuf = await res.arrayBuffer();
+          const tempCtx = new AudioContext();
+          const decoded = await tempCtx.decodeAudioData(arrayBuf);
+
+          const ch0 = decoded.getChannelData(0);
+          const bgm = new Float32Array(ch0.length);
+          bgm.set(ch0);
+
+          const bRes = linearResample(bgm, decoded.sampleRate || 44100, dstSR);
+
+          if (bRes.length > 0) {
+            const fadeIn = dstSR * 1;
+            const fadeOut = dstSR * 2;
+
+            for (let i = 0; i < out.length; i++) {
+              const bi = i % bRes.length;
+              let vol = (bgmVolume || 0) * 2.05;
+              if (i < fadeIn) vol *= i / fadeIn;
+              if (i > out.length - fadeOut) vol *= (out.length - i) / fadeOut;
+              out[i] += bRes[bi] * vol;
+            }
+          }
+
+          tempCtx.close();
+        }
+      } catch {}
+    }
+
+    const limitT = 0.82;
+    const ceiling = 0.99;
+    for (let i = 0; i < out.length; i++) {
+      let s = out[i];
+      const absS = Math.abs(s);
+      if (absS > limitT) {
+        const over = absS - limitT;
+        s = Math.sign(s) * (limitT + over / (1 + over * 2.5));
+      }
+      out[i] = clamp(s, -ceiling, ceiling);
+    }
+
+    return encodeWavMonoF32ToS16PCM(out, dstSR);
+  };
+
+  const drawCover = (
+    ctx: CanvasRenderingContext2D,
+    bmp: ImageBitmap,
+    w: number,
+    h: number,
+    scale: number,
+    doZoom: boolean
+  ) => {
+    const srcW = bmp.width;
+    const srcH = bmp.height;
+
+    const srcRatio = srcW / srcH;
+    const dstRatio = w / h;
+
+    const baseDW = srcRatio > dstRatio ? h * srcRatio : w;
+    const baseDH = srcRatio > dstRatio ? h : w / srcRatio;
+
+    const dW = doZoom ? baseDW * scale : baseDW;
+    const dH = doZoom ? baseDH * scale : baseDH;
+
+    const oX = (w - dW) / 2;
+    const oY = (h - dH) / 2;
+
+    ctx.drawImage(bmp, oX, oY, dW, dH);
+  };
+
+  const renderFrame = async (
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    t: number,
+    timeline: SceneTimelineEntry[],
+    settings2: VideoSettings
+  ) => {
+    ctx.fillStyle = 'black';
+    ctx.fillRect(0, 0, w, h);
+
+    const entry = timeline.find((e) => !e.scene?.isHeader && t >= e.start && t < e.end) || timeline[0];
+
+    const url = entry?.scene?.imageUrl || null;
+    const isVideo = entry?.scene?.userAssetType === 'video';
+
+    if (url && !url.startsWith('data:image/svg')) {
+      if (isVideo) {
+        const bmp = await getVideoBitmapAt(url, entry.start, entry.end, t);
+        if (bmp) drawCover(ctx, bmp, w, h, 1, false);
+      } else {
+        const bmp = await getBitmapFromUrl(url);
+
+        const sceneStart = entry.start;
+        const sceneEnd = entry.end;
+        const sceneDuration = Math.max(0.001, sceneEnd - sceneStart);
+        const elapsed = Math.max(0, Math.min(sceneDuration, t - sceneStart));
+
+        const sceneIndex = timeline.indexOf(entry);
+        const isZoomOut = sceneIndex % 2 !== 0;
+
+        const p = elapsed / sceneDuration;
+        const lerp = (a: number, b: number, x: number) => a + (b - a) * x;
+
+        const scale = isZoomOut ? lerp(1.2, 1.0, p) : lerp(1.0, 1.2, p);
+
+        drawCover(ctx, bmp, w, h, scale, true);
+      }
+    }
+
+    // 상단 헤더(누적)
+    ctx.save();
+    let activeHeader = '';
+    for (const ent of timeline) {
+      if (ent.start <= t && ent.scene?.isHeader) activeHeader = ent.scene.subtitle || '';
+    }
+    if (activeHeader) {
+      const fs = w * 0.028;
+      ctx.font = `900 ${fs}px 'Noto Sans KR', sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+      ctx.fillText(activeHeader.replace(/[\[\]]/g, ''), w / 2, h * 0.04);
+    }
+
+    // 하단 자막
+    if (!entry?.scene?.isHeader) {
+      const ratioMap =
+        settings2.aspectRatio === '16:9'
+          ? { S: 0.03, M: 0.045, L: 0.055 }
+          : { S: 0.05, M: 0.075, L: 0.09 };
+
+      const M_ONLY_SCALE = 0.9;
+      const sizeRatio = ratioMap[settings2.subtitleSize];
+      const subtitleScale = settings2.subtitleSize === 'M' ? M_ONLY_SCALE : 1.0;
+      const baseFS = w * sizeRatio * subtitleScale;
+
+      ctx.font = `900 ${baseFS}px 'Noto Sans KR', sans-serif`;
+      ctx.textAlign = 'center';
+
+      const limitRatio = settings2.aspectRatio === '9:16' ? 0.9 : 0.95;
+
+      const cleanSubtitle = String(entry?.scene?.subtitle || '')
+        .replace(/\r?\n+/g, ' ')
+        .replace(/\r/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+
+      const maxTextWidth = w * limitRatio;
+
+      const lines =
+        cleanSubtitle.length <= 6 ? [cleanSubtitle] : getBalancedLines(ctx, cleanSubtitle, maxTextWidth, settings2.subtitleSize);
+
+      const lineH = baseFS * 1.45;
+      const textBlockH = lines.length * lineH;
+
+      const padX = baseFS * 0.7;
+      const padY = baseFS * 0.1;
+
+      const bottomOffset = h * (settings2.subtitlePosition / 100);
+      const BASELINE_FIX = baseFS * 0.55;
+
+      const firstLineY =
+        h -
+        bottomOffset -
+        (settings2.showSubtitleBox ? padY : 0) -
+        (textBlockH - lineH) -
+        BASELINE_FIX;
+
+      if (settings2.showSubtitleBox && lines.length > 0) {
+        let maxW = 0;
+        for (const l of lines) maxW = Math.max(maxW, ctx.measureText(l).width);
+
+        const boxW = maxW + padX * 2;
+        const boxH = textBlockH + padY * 2;
+        const boxX = (w - boxW) / 2;
+        const boxTopY = firstLineY - lineH / 2 - padY;
+
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        const radius = baseFS * 0.2;
+        fillRoundRect(ctx, boxX, boxTopY, boxW, boxH, radius);
+      }
+
+      ctx.fillStyle = 'white';
+      ctx.textBaseline = 'middle';
+      for (let i = 0; i < lines.length; i++) {
+        ctx.fillText(lines[i], w / 2, firstLineY + i * lineH);
+      }
+    }
+
+    ctx.restore();
+  };
+
+  const handleStopExport = async () => {
+    cancelRef.current = true;
+
+    const jobId = jobIdRef.current;
+    if (jobId && window.NOGGANG_EXPORT?.exportCancel) {
+      try {
+        await window.NOGGANG_EXPORT.exportCancel({ jobId });
+      } catch {}
+    }
+
+    jobIdRef.current = null;
     setIsExporting(false);
     setShowStopConfirm(false);
     setExportProgress(0);
     setError('사용자가 제작을 취소했습니다.');
   };
 
-  const getWorkerCode = () => {
-    return `
-      import * as WebMMuxer from 'https://esm.sh/webm-muxer@3.0.1';
 
-      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-      // ✅ 2줄 밸런스 분리 (중(M) 한줄로 화면 밖 문제 해결 핵심)
-      const getBalancedLines = (ctx, text, maxWidth, subtitleSize) => {
-        if (!text) return [];
-        const t = String(text)
-          .replace(/\\r/g, '')
-          .replace(/[ \\t]{2,}/g, ' ')
-          .replace(/\\s{2,}/g, ' ')
-          .trim();
-        if (!t) return [];
 
-        // ✅ 사이즈별 1줄 허용 비율
-        const ONE_LINE_RATIO =
-          subtitleSize === 'S' ? 0.85 :
-          subtitleSize === 'M' ? 0.92 :
-          0.98;
-
-        const fullW = ctx.measureText(t).width;
-        if (fullW <= maxWidth * ONE_LINE_RATIO) {
-          return [t];
-        }
-
-        const breaks = [];
-        for (let i = 1; i < t.length; i++) {
-          const prev = t[i - 1];
-          if (prev === ' ' || /[,.!?…)\\]]/.test(prev)) {
-            breaks.push(i);
-          }
-        }
-
-        if (breaks.length === 0) {
-          const mid = Math.floor(t.length / 2);
-          return [
-            t.slice(0, mid).trim(),
-            t.slice(mid).trim()
-          ];
-        }
-
-        let best = null;
-        for (const idx of breaks) {
-          const a = t.slice(0, idx).trim();
-          const b = t.slice(idx).trim();
-          if (!a || !b) continue;
-
-          const diff = Math.abs(ctx.measureText(a).width - ctx.measureText(b).width);
-          if (!best || diff < best.diff) best = { a, b, diff };
-        }
-
-        if (best) return [best.a, best.b];
-
-        const cut = breaks[Math.floor(breaks.length / 2)];
-        return [
-          t.slice(0, cut).trim(),
-          t.slice(cut).trim()
-        ];
-      };
-
-      const fillRoundRect = (ctx, x, y, w, h, r) => {
-        const radius = Math.max(0, Math.min(r, Math.min(w, h) / 2));
-        ctx.beginPath();
-        if (typeof ctx.roundRect === 'function') ctx.roundRect(x, y, w, h, radius);
-        else {
-          ctx.moveTo(x + radius, y);
-          ctx.arcTo(x + w, y, x + w, y + h, radius);
-          ctx.arcTo(x + w, y + h, x, y + h, radius);
-          ctx.arcTo(x, y + h, x, y, radius);
-          ctx.arcTo(x, y, x + w, y, radius);
-        }
-        ctx.closePath();
-        ctx.fill();
-      };
-
-      // ✅ 이미지 캐시 (URL → ImageBitmap 재사용)
-      const __imgCache = new Map();
-
-      async function getBitmapFromUrl(url) {
-        if (!url) return null;
-
-        if (__imgCache.has(url)) return __imgCache.get(url);
-
-        const r = await fetch(url, { cache: 'force-cache' });
-        if (!r.ok) throw new Error('이미지 fetch 실패: ' + r.status);
-
-        const blob = await r.blob();
-        const bmp = await createImageBitmap(blob);
-
-        __imgCache.set(url, bmp);
-        return bmp;
-      }
-
-      let frameResponse = null;
-      let lastProvidedFrameIndex = -1;
-      let lastGoodBitmap = null;
-      let prevSceneId = null;
-
-      self.onmessage = async (event) => {
-        try {
-          if (event?.data?.type === 'provide_frame') {
-            const idx = Number(event.data?.payload?.frameIndex ?? -1);
-            const bmp = event.data?.payload?.bitmap || null;
-
-            frameResponse = bmp;
-            lastProvidedFrameIndex = idx;
-            return;
-          }
-
-          // ✅ 폰트 로드 (실패해도 진행)
-          try {
-            const font = new FontFace(
-              'Noto Sans KR',
-              'url(https://fonts.gstatic.com/s/notosanskr/v27/PbykFmXiEBPT4ITbgNA5CgmOelzI.woff2)',
-              { weight: '900' }
-            );
-            await font.load();
-            self.fonts.add(font);
-          } catch {}
-
-          if (!event?.data || event.data.type !== 'start') return;
-
-          const payload = event.data.payload || {};
-          const offscreenCanvas = payload.offscreenCanvas;
-
-          if (!offscreenCanvas || typeof offscreenCanvas.getContext !== 'function') {
-            throw new Error('offscreenCanvas가 워커로 전달되지 않았습니다. (OffscreenCanvas/transfer 미지원 또는 전달 실패)');
-          }
-
-          if (typeof VideoEncoder === 'undefined' || typeof AudioEncoder === 'undefined' || typeof VideoFrame === 'undefined' || typeof AudioData === 'undefined') {
-            throw new Error('WebCodecs 미지원 환경이라 비디오 추출이 불가합니다.');
-          }
-
-          const settings = payload.settings;
-          const fullSpeechAudioRaw = payload.fullSpeechAudioRaw;
-          const fullSpeechAudioSampleRate = payload.fullSpeechAudioSampleRate || 24000;
-
-          const bgmAudioRaw = payload.bgmAudioRaw || null;
-          const bgmAudioSampleRate = payload.bgmAudioSampleRate || 44100;
-          const bgmVolume = payload.bgmVolume || 0;
-
-          const sceneTimeline = payload.sceneTimeline || [];
-
-          const ctx = offscreenCanvas.getContext('2d');
-
-          const w = settings.aspectRatio === '16:9' ? 1920 : 1080;
-          const h = settings.aspectRatio === '16:9' ? 1080 : 1920;
-
-          const timelineEnd = sceneTimeline?.length ? sceneTimeline[sceneTimeline.length - 1].end : 0;
-          const speechSamples = (fullSpeechAudioRaw ? (fullSpeechAudioRaw.byteLength / 4) : 0);
-          const speechDuration = speechSamples / (fullSpeechAudioSampleRate || 24000);
-          const totalDuration = Math.max(timelineEnd, speechDuration);
-
-          if (sceneTimeline?.length) sceneTimeline[sceneTimeline.length - 1].end = totalDuration;
-
-          const muxerLib = (WebMMuxer.default || WebMMuxer);
-          const muxer = new muxerLib.Muxer({
-            target: new muxerLib.ArrayBufferTarget(),
-            video: { codec: 'V_VP8', width: w, height: h, frameRate: 30 },
-            audio: { codec: 'A_OPUS', sampleRate: 48000, numberOfChannels: 1 }
-          });
-
-          const vEncoder = new VideoEncoder({
-            output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-            error: (e) => self.postMessage({ type: 'error', payload: { message: e?.message ? e.message : String(e) } })
-          });
-          vEncoder.configure({ codec: 'vp8', width: w, height: h, bitrate: 14_000_000 });
-
-          const aEncoder = new AudioEncoder({
-            output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-            error: (e) => self.postMessage({ type: 'error', payload: { message: e?.message ? e.message : String(e) } })
-          });
-          aEncoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate: 256_000 });
-
-          // --------------------
-          // ✅ 오디오 믹스
-          // --------------------
-          const finalMixedAudio = new Float32Array(Math.round(totalDuration * 48000));
-          const speechData = fullSpeechAudioRaw ? new Float32Array(fullSpeechAudioRaw) : new Float32Array(0);
-          const sRatio = 48000 / (fullSpeechAudioSampleRate || 24000);
-
-          for (let i = 0; i < finalMixedAudio.length; i++) {
-            const sIdx = i / sRatio;
-            const i0 = Math.floor(sIdx);
-            const i1 = Math.min(i0 + 1, Math.max(0, speechData.length - 1));
-            if (i0 < speechData.length && speechData.length > 0) {
-              const frac = sIdx - i0;
-              finalMixedAudio[i] = (speechData[i0] * (1 - frac) + speechData[i1] * frac) * 1.0;
-            } else {
-              finalMixedAudio[i] = 0;
-            }
-          }
-
-          if (bgmAudioRaw) {
-            const bgmData = new Float32Array(bgmAudioRaw);
-            const bRatio = 48000 / (bgmAudioSampleRate || 44100);
-
-            for (let i = 0; i < finalMixedAudio.length; i++) {
-              if (bgmData.length === 0) break;
-              const bIdx = (i % Math.round(bgmData.length * bRatio)) / bRatio;
-              const b0 = Math.floor(bIdx);
-              const b1 = (b0 + 1) % bgmData.length;
-              const frac = bIdx - b0;
-
-              let vol = bgmVolume * 2.05;
-              if (i < 48000) vol *= (i / 48000);
-              if (i > finalMixedAudio.length - 96000) vol *= (finalMixedAudio.length - i) / 96000;
-
-              finalMixedAudio[i] += (bgmData[b0] * (1 - frac) + bgmData[b1] * frac) * vol;
-            }
-          }
-
-          const limitT = 0.82;
-          const ceiling = 0.99;
-          for (let i = 0; i < finalMixedAudio.length; i++) {
-            let s = finalMixedAudio[i];
-            const absS = Math.abs(s);
-            if (absS > limitT) {
-              const over = absS - limitT;
-              s = Math.sign(s) * (limitT + (over / (1 + over * 2.5)));
-            }
-            finalMixedAudio[i] = Math.max(-ceiling, Math.min(ceiling, s));
-          }
-
-          const aData = new AudioData({
-            format: 'f32',
-            sampleRate: 48000,
-            numberOfFrames: finalMixedAudio.length,
-            numberOfChannels: 1,
-            timestamp: 0,
-            data: finalMixedAudio
-          });
-          aEncoder.encode(aData);
-          aData.close();
-
-          // --------------------
-          // ✅ 비디오 프레임 루프
-          // --------------------
-          const fps = 30;
-          const totalFrames = Math.ceil(totalDuration * fps);
-
-          const ratioMap = settings.aspectRatio === '16:9'
-            ? { S: 0.03, M: 0.045, L: 0.055 }
-            : { S: 0.05, M: 0.075, L: 0.09 };
-
-          const M_ONLY_SCALE = 0.90;
-          const sizeRatio = ratioMap[settings.subtitleSize];
-          const subtitleScale = (settings.subtitleSize === 'M') ? M_ONLY_SCALE : 1.0;
-          const baseFS = w * sizeRatio * subtitleScale;
-
-          for (let f = 0; f < totalFrames; f++) {
-            if (f % 10 === 0) {
-              self.postMessage({
-                type: 'progress',
-                payload: { percent: Math.round((f / totalFrames) * 100) }
-              });
-            }
-
-            const t = f / fps;
-
-            const entry =
-              sceneTimeline.find(e => !e.scene?.isHeader && t >= e.start && t < e.end) ||
-              sceneTimeline[0];
-
-            // ✅ 장면 전환 감지 → 이전 프레임 캐시 제거
-            if (f === 0 || (prevSceneId !== entry.scene.imageUrl)) {
-              lastGoodBitmap = null;
-            }
-            prevSceneId = entry.scene.imageUrl;
-
-            // ✅ 현재 엔트리
-            const url = entry?.scene?.imageUrl || null;
-            const isVideo = entry?.scene?.userAssetType === 'video';
-
-           // ✅ 1) 비디오면: 메인 프레임 요청을 매 프레임이 아니라 "N프레임마다"만 수행 (UI 스크롤 프리징 방지)
-if (isVideo) {
-  const VIDEO_REQUEST_EVERY_N_FRAMES = 4; // ✅ 30fps 기준: 4면 7.5fps만 메인에서 공급(대부분 충분). 3~6 사이 취향.
-
-  const shouldRequest =
-    (f === 0) ||
-    (prevSceneId !== entry.scene.imageUrl) ||
-    (f % VIDEO_REQUEST_EVERY_N_FRAMES === 0) ||
-    (!lastGoodBitmap); // 첫 프레임/전환/주기/캐시없음
-
-  if (shouldRequest) {
-    self.postMessage({
-      type: 'request_frame',
-      payload: { timestamp: t, frameIndex: f }
-    });
-
-    const waitStart = performance.now();
-    while (
-      lastProvidedFrameIndex < f &&
-      (performance.now() - waitStart) < 350 // ✅ 1200 → 350: 너무 오래 기다리면 UI도 더 답답해짐
-    ) {
-      await sleep(1);
-    }
-
-    // 프레임 수신 처리
-    if (frameResponse) {
-      lastGoodBitmap = frameResponse;
-      frameResponse = null;
-    }
-  }
-
-  // 캔버스 클리어
-  ctx.fillStyle = 'black';
-  ctx.fillRect(0, 0, w, h);
-
-  // ✅ 요청 못받아도 lastGoodBitmap으로 계속 그려서 검정 깜빡임/프리징 완화
-  const bmpToDraw = lastGoodBitmap || null;
-
-  if (bmpToDraw) {
-    const srcW = bmpToDraw.width;
-    const srcH = bmpToDraw.height;
-
-    const srcRatio = srcW / srcH;
-    const dstRatio = w / h;
-
-    let dW, dH, oX, oY;
-
-    if (srcRatio > dstRatio) {
-      dH = h;
-      dW = h * srcRatio;
-      oX = (w - dW) / 2;
-      oY = 0;
-    } else {
-      dW = w;
-      dH = w / srcRatio;
-      oX = 0;
-      oY = (h - dH) / 2;
-    }
-
-    ctx.drawImage(bmpToDraw, oX, oY, dW, dH);
-  }
-}
-
-            // ✅ 2) 이미지면: 워커가 직접 fetch+캐시해서 그림 (메인 호출 없음)
-            else {
-              const bmp = url ? await getBitmapFromUrl(url) : null;
-
-              if (bmp) {
-                const sceneStart = entry.start;
-                const sceneEnd = entry.end;
-                const sceneDuration = Math.max(0.001, sceneEnd - sceneStart);
-                const elapsed = Math.max(0, Math.min(sceneDuration, t - sceneStart));
-
-                const sceneIndex = sceneTimeline.indexOf(entry);
-                const isZoomOut = sceneIndex % 2 !== 0;
-
-                const p = elapsed / sceneDuration;
-                const lerp = (a, b, t) => a + (b - a) * t;
-
-                const scale = isZoomOut
-                  ? lerp(1.2, 1.0, p)
-                  : lerp(1.0, 1.2, p);
-
-                const srcW = bmp.width;
-                const srcH = bmp.height;
-
-                const srcRatio = srcW / srcH;
-                const dstRatio = w / h;
-
-                const baseDW = srcRatio > dstRatio ? h * srcRatio : w;
-                const baseDH = srcRatio > dstRatio ? h : w / srcRatio;
-
-                const dW = baseDW * scale;
-                const dH = baseDH * scale;
-
-                const oX = (w - dW) / 2;
-                const oY = (h - dH) / 2;
-
-                ctx.drawImage(bmp, oX, oY, dW, dH);
-              }
-            }
-
-            // ✅ 상단 헤더(누적)
-            ctx.save();
-            let activeHeader = '';
-            for (const ent of sceneTimeline) {
-              if (ent.start <= t && ent.scene?.isHeader) activeHeader = ent.scene.subtitle || '';
-            }
-            if (activeHeader) {
-              const fs = w * 0.028;
-              ctx.font = "900 " + fs + "px 'Noto Sans KR', sans-serif";
-              ctx.textAlign = 'center';
-              ctx.textBaseline = 'top';
-              ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-              ctx.fillText(activeHeader.replace(/[\\[\\]]/g, ''), w / 2, h * 0.04);
-            }
-
-            // ✅ 하단 자막
-            if (!entry?.scene?.isHeader) {
-              ctx.font = "900 " + baseFS + "px 'Noto Sans KR', sans-serif";
-              ctx.textAlign = 'center';
-
-              const limitRatio = (settings.aspectRatio === '9:16') ? 0.90 : 0.95;
-
-              const cleanSubtitle = String(entry?.scene?.subtitle || '')
-                .replace(/\\r?\\n+/g, ' ')
-                .replace(/\\r/g, '')
-                .replace(/\\s{2,}/g, ' ')
-                .trim();
-
-              const maxTextWidth = w * limitRatio;
-
-              const lines =
-                cleanSubtitle.length <= 6
-                  ? [cleanSubtitle]
-                  : getBalancedLines(ctx, cleanSubtitle, maxTextWidth, settings.subtitleSize);
-
-              const lineH = baseFS * 1.45;
-              const textBlockH = lines.length * lineH;
-
-              const padX = baseFS * 0.7;
-              const padY = baseFS * 0.10;
-
-              const bottomOffset = h * (settings.subtitlePosition / 100);
-              const BASELINE_FIX = baseFS * 0.55;
-
-              const firstLineY =
-                (h - bottomOffset)
-                - (settings.showSubtitleBox ? padY : 0)
-                - (textBlockH - lineH)
-                - BASELINE_FIX;
-
-              if (settings.showSubtitleBox && lines.length > 0) {
-                let maxW = 0;
-                lines.forEach(l => { maxW = Math.max(maxW, ctx.measureText(l).width); });
-                const boxW = maxW + padX * 2;
-                const boxH = textBlockH + padY * 2;
-                const boxX = (w - boxW) / 2;
-                const boxTopY = firstLineY - (lineH / 2) - padY;
-
-                ctx.fillStyle = 'rgba(0,0,0,0.7)';
-                const radius = baseFS * 0.2;
-                fillRoundRect(ctx, boxX, boxTopY, boxW, boxH, radius);
-              }
-
-              ctx.fillStyle = 'white';
-              ctx.textBaseline = 'middle';
-              lines.forEach((l, i) => ctx.fillText(l, w / 2, firstLineY + i * lineH));
-            }
-
-            ctx.restore();
-
-            const vFrame = new VideoFrame(offscreenCanvas, { timestamp: Math.floor(t * 1_000_000) });
-            vEncoder.encode(vFrame, { keyFrame: f % 30 === 0 });
-            vFrame.close();
-
-            if (vEncoder.encodeQueueSize > 10) await sleep(10);
-          }
-
-          await vEncoder.flush();
-          await aEncoder.flush();
-          muxer.finalize();
-
-          self.postMessage({
-            type: 'completed',
-            payload: { blob: new Blob([muxer.target.buffer], { type: 'video/webm' }) }
-          });
-        } catch (e) {
-          const msg = e?.message ? e.message : String(e);
-          self.postMessage({ type: 'error', payload: { message: msg } });
-        }
-      };
-    `;
-  };
-
-  const handleExport = async () => {
+   const handleExport = async () => {
     if (isExporting || !fullSpeechAudioBuffer) return;
 
-    setIsExporting(true);
-    setError(null);
-    setExportProgress(0);
+     if (!window.NOGGANG_EXPORT) {
+    setError('Electron export 브릿지가 없습니다. (window.NOGGANG_EXPORT 미존재)');
+    return;
+  }
+
+  const picked = await window.NOGGANG_EXPORT.chooseExportDir();
+  if (picked.canceled || !picked.dirPath) {
+    return;
+  }
+  const outputDir = picked.dirPath;
+
+  cancelRef.current = false;
+  setIsExporting(true);
+  setError(null);
+  setExportProgress(0);
+
 
     try {
-      if (typeof (window as any).OffscreenCanvas === 'undefined') {
-        throw new Error('이 브라우저는 OffscreenCanvas를 지원하지 않아 비디오 추출이 불가합니다. (Chrome 최신 권장)');
-      }
-
-      const workerBlob = new Blob([getWorkerCode()], { type: 'application/javascript' });
-      const worker = new Worker(URL.createObjectURL(workerBlob), { type: 'module' });
-      workerRef.current = worker;
-
-      worker.onerror = (e: any) => {
-        console.error('[Worker onerror]', e);
-        setError(`워커 에러: ${e?.message || e?.error?.message || 'unknown'}`);
-        setIsExporting(false);
-        try { worker.terminate(); } catch {}
-        workerRef.current = null;
-      };
-
       const [w, h] = settings.aspectRatio === '16:9' ? [1920, 1080] : [1080, 1920];
-      const offscreen = new OffscreenCanvas(w, h);
 
-      // ✅ 비디오 프리로드 (이미지는 워커/메인에서 fetch)
-      const videoElements: Record<string, HTMLVideoElement> = {};
-      const videoFrameCanvases: Record<string, HTMLCanvasElement> = {};
-      const videoSeekLocks: Record<string, Promise<void> | null> = {};
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
 
-      for (const scene of scenes) {
-        if (!scene.imageUrl || scene.imageUrl.startsWith('data:image/svg')) continue;
-        try {
-          if (scene.userAssetType === 'video') {
-            if (!videoElements[scene.imageUrl]) {
-              const vid = document.createElement('video');
-              vid.crossOrigin = 'anonymous';
-              vid.preload = 'auto';
-              vid.muted = true;
-              (vid as any).playsInline = true;
-              vid.src = scene.imageUrl;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('2D 컨텍스트 생성 실패');
 
-              await new Promise<void>((res, rej) => {
-                const onOk = () => { cleanup(); res(); };
-                const onErr = () => { cleanup(); rej(new Error('video load error')); };
-                const cleanup = () => {
-                  vid.removeEventListener('loadedmetadata', onOk);
-                  vid.removeEventListener('error', onErr);
-                };
-                vid.addEventListener('loadedmetadata', onOk, { once: true });
-                vid.addEventListener('error', onErr, { once: true });
-                vid.load();
-              });
+      const timelineEnd = sceneTimeline?.length ? sceneTimeline[sceneTimeline.length - 1].end : 0;
+      const speechDur = fullSpeechAudioBuffer.length / (fullSpeechAudioBuffer.sampleRate || 24000);
+      const totalDuration = Math.max(timelineEnd, speechDur);
 
-              videoElements[scene.imageUrl] = vid;
-              videoSeekLocks[scene.imageUrl] = null;
-            }
-          }
-        } catch (e) {
-          console.error('Asset pre-loading error:', e);
+      const fps = 24;
+const totalFrames = Math.ceil(totalDuration * fps);
+
+      const title = metadata?.title || 'video';
+
+          const begin = await window.NOGGANG_EXPORT.exportBegin({
+        width: w,
+        height: h,
+        fps,
+        totalFrames,
+        title,
+        outputDir
+      });
+
+
+      jobIdRef.current = begin.jobId;
+
+      const wavBytes = await mixSpeechAndBgmToWav(totalDuration);
+      if (cancelRef.current) throw new Error('CANCELLED');
+
+      await window.NOGGANG_EXPORT.exportWriteAudioWav({
+        jobId: begin.jobId,
+        wavBytes
+      });
+
+      for (let f = 0; f < totalFrames; f++) {
+        if (cancelRef.current) throw new Error('CANCELLED');
+
+        const t = f / fps;
+        await renderFrame(ctx, w, h, t, sceneTimeline, settings);
+
+        const pngBytes = await new Promise<Uint8Array>((resolve, reject) => {
+  canvas.toBlob(
+    async (blob) => {
+      try {
+        if (!blob) return reject(new Error('JPEG blob 생성 실패'));
+        const ab = await blob.arrayBuffer();
+        resolve(new Uint8Array(ab));
+      } catch (e: any) {
+        reject(e);
+      }
+    },
+    'image/jpeg',
+    0.92
+  );
+});
+
+
+        await window.NOGGANG_EXPORT.exportWriteFrame({
+          jobId: begin.jobId,
+          frameIndex: f,
+          pngBytes
+        });
+
+        if (f % 10 === 0) {
+          setExportProgress(Math.round((f / totalFrames) * 100));
+          await sleep(0);
         }
       }
 
-      // ✅ BGM 디코드
-      let bgmAudioRaw: ArrayBuffer | null = null;
-      let bgmSR = 44100;
+      setExportProgress(100);
 
-      if (bgmUrl) {
+      const done = await window.NOGGANG_EXPORT.exportFinalize({ jobId: begin.jobId });
+
+      jobIdRef.current = null;
+      setIsExporting(false);
+      setError(`완료: ${done.outputPath}`);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+
+      if (msg !== 'CANCELLED') {
+        setError(msg);
+        setIsExporting(false);
+      }
+
+      const jobId = jobIdRef.current;
+      if (jobId && window.NOGGANG_EXPORT?.exportCancel) {
         try {
-          const res = await fetch(bgmUrl);
-          if (res.ok) {
-            const arrayBuf = await res.arrayBuffer();
-            const tempCtx = new AudioContext();
-            const decoded = await tempCtx.decodeAudioData(arrayBuf);
-
-            const ch0 = decoded.getChannelData(0);
-            const copy = new Float32Array(ch0.length);
-            copy.set(ch0);
-
-            bgmAudioRaw = copy.buffer;
-            bgmSR = decoded.sampleRate;
-
-            tempCtx.close();
-          }
+          await window.NOGGANG_EXPORT.exportCancel({ jobId });
         } catch {}
       }
 
-      // ✅ TTS 오디오 복사(transfer)
-      const rawAudio = fullSpeechAudioBuffer.getChannelData(0);
-      const audioCopy = new Float32Array(rawAudio.length);
-      audioCopy.set(rawAudio);
-
-      const seekVideoTo = async (vid: HTMLVideoElement, targetTime: number) => {
-        const t = Math.max(0, Math.min((Number.isFinite(vid.duration) ? vid.duration : 0) || 0, targetTime));
-        if (!Number.isFinite(t)) return;
-
-        const diff = Math.abs((vid.currentTime || 0) - t);
-      if (diff < 0.01) return;
-
-        await new Promise<void>((resolve) => {
-          let done = false;
-
-          const cleanup = () => {
-            if (done) return;
-            done = true;
-            vid.removeEventListener('seeked', onSeeked);
-            clearTimeout(to);
-            resolve();
-          };
-
-          const onSeeked = () => cleanup();
-
-          const to = window.setTimeout(() => cleanup(), 250);
-
-          vid.addEventListener('seeked', onSeeked, { once: true });
-          try {
-            // fastSeek 지원 브라우저면 우선 사용
-            if (typeof (vid as any).fastSeek === 'function') (vid as any).fastSeek(t);
-            else vid.currentTime = t;
-          } catch {
-            cleanup();
-          }
-        });
-      };
-
-      worker.onmessage = async (e) => {
-        try {
-          const { type, payload } = e.data || {};
-
-          if (type === 'progress') {
-            setExportProgress(payload.percent);
-            return;
-          }
-
-          if (type === 'request_frame') {
-            const { timestamp, frameIndex } = payload;
-
-            const entry =
-              sceneTimeline.find(ent => !ent.scene.isHeader && timestamp >= ent.start && timestamp < ent.end) ||
-              sceneTimeline[0];
-
-            let bitmap: ImageBitmap | null = null;
-
-            const url = entry?.scene?.imageUrl;
-
-            if (url) {
-              if (entry.scene.userAssetType === 'video' && videoElements[url]) {
-                const vid = videoElements[url];
-// ✅ 씬 변경 감지 (URL ❌ / scene.start 기준)
-if ((vid as any).__lastSceneStart !== entry.start) {
-  (vid as any).__started = false;
-  (vid as any).__lastSceneStart = entry.start;
-}
-
-                const sceneDuration = Math.max(0.001, entry.end - entry.start);
-                const videoDuration =
-                  Number.isFinite(vid.duration) && vid.duration > 0 ? vid.duration : 1;
-
-               if (!(vid as any).__started) {
-  vid.currentTime = 0;
- vid.loop = true;
-vid.playbackRate = sceneDuration / videoDuration;
-  await vid.play();
-  (vid as any).__started = true;
-
-  
-}
-
-
-
-
-
-                const prevLock = videoSeekLocks[url];
-                const lock = (async () => {
-                  if (prevLock) {
-                    try { await prevLock; } catch {}
-                  }
-                 await new Promise<void>((resolve) => {
-  vid.requestVideoFrameCallback(() => resolve());
-});
-                })();
-
-                videoSeekLocks[url] = lock;
-                await lock;
-
-                if (vid.readyState >= 2 && vid.videoWidth > 0 && vid.videoHeight > 0) {
-                  let c = videoFrameCanvases[url];
-                  if (!c) {
-                    c = document.createElement('canvas');
-                    videoFrameCanvases[url] = c;
-                  }
-                  c.width = vid.videoWidth;
-                  c.height = vid.videoHeight;
-
-                  const ctx2d = c.getContext('2d');
-                  if (ctx2d) {
-                    ctx2d.drawImage(vid, 0, 0, c.width, c.height);
-                    bitmap = await createImageBitmap(c);
-                  }
-                }
-              }
-            }
-
-            worker.postMessage(
-              { type: 'provide_frame', payload: { frameIndex, bitmap } },
-              bitmap ? [bitmap] : []
-            );
-
-            return;
-          }
-
-          if (type === 'completed') {
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(payload.blob);
-            a.download = `${metadata?.title || 'video'}.webm`;
-            a.click();
-            setIsExporting(false);
-            worker.terminate();
-            workerRef.current = null;
-            return;
-          }
-
-          if (type === 'error') {
-            setError(payload.message);
-            setIsExporting(false);
-            worker.terminate();
-            workerRef.current = null;
-            return;
-          }
-        } catch (err) {
-          console.error('[worker.onmessage fatal]', err);
-          setError(String(err));
-          setIsExporting(false);
-          try { worker.terminate(); } catch {}
-          workerRef.current = null;
-        }
-      };
-
-      const transfer: Transferable[] = [offscreen, audioCopy.buffer];
-      if (bgmAudioRaw) transfer.push(bgmAudioRaw);
-
-      worker.postMessage(
-        {
-          type: 'start',
-          payload: {
-            offscreenCanvas: offscreen,
-            settings,
-            fullSpeechAudioRaw: audioCopy.buffer,
-            fullSpeechAudioSampleRate: fullSpeechAudioBuffer.sampleRate,
-            bgmAudioRaw,
-            bgmAudioSampleRate: bgmSR,
-            bgmVolume,
-            sceneTimeline: sceneTimeline.map(e2 => ({
-              start: e2.start,
-              end: e2.end,
-              scene: {
-                subtitle: e2.scene.subtitle,
-                imageUrl: e2.scene.imageUrl,
-                isHeader: e2.scene.isHeader,
-                userAssetType: e2.scene.userAssetType
-              }
-            }))
-          }
-        },
-        transfer
-      );
-    } catch (err: any) {
-      setError(err?.message || String(err));
+      jobIdRef.current = null;
       setIsExporting(false);
-      try { workerRef.current?.terminate(); } catch {}
-      workerRef.current = null;
     }
   };
+
+
 
   const stopConfirmModal = showStopConfirm
     ? ReactDOM.createPortal(
