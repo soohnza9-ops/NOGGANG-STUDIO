@@ -1,0 +1,8 @@
+{
+  "name": "♥노깡♥스튜디오♥♥♥Ver.2",
+  "description": "Transforms user scripts into visual storyboards using Gemini AI. Features automatic scene analysis and customizable artistic styles.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
