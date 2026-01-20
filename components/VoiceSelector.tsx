@@ -6,6 +6,7 @@ import BgmSelector from './BgmSelector';
 import { pitchShiftAudioBuffer } from '../audio/pitchShift';
 import { convertToKoreanSpeech } from '../services/geminiService';
 
+
 interface VoiceSelectorProps {
   selectedVoice: VoiceName;
   onSelect: (voice: VoiceName) => void;
@@ -273,10 +274,10 @@ const speakingRate = Math.max(0.5, Math.min(2.0, Number(voiceSpeed) || 1.0));
 
       {/* 성우 버튼 */}
       <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        className="overflow-x-auto pb-2 [-webkit-overflow-scrolling:touch]"
-      >
+  ref={scrollRef}
+  onScroll={handleScroll}
+  className="overflow-x-auto pb-2 [-webkit-overflow-scrolling:touch] voice-scroll"
+>
         <div className="min-w-max space-y-3 pr-2">
           <div className="flex gap-2">
             {maleVoices.map(v => <VoiceButton key={v.id} voice={v} />)}

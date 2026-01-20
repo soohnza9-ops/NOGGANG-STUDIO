@@ -17,6 +17,7 @@
     "lucide-react": "^0.561.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
+    "react-router-dom": "^7.12.0",
     "soundtouchjs": "^0.2.1",
     "webm-muxer": "3.0.1"
   },

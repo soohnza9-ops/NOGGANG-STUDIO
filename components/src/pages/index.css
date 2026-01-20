@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== VOICE SELECTOR SCROLLBAR ===== */
+.voice-scroll::-webkit-scrollbar {
+  height: 10px;
+}
+
+.voice-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.voice-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 9999px;
+}
+
+.voice-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* 라이트 모드 대응 */
+html:not(.dark) .voice-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+html:not(.dark) .voice-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.45);
+}

@@ -1,18 +1,21 @@
 import { useState } from "react";
 import { signInWithEmailAndPassword, sendPasswordResetEmail } from "firebase/auth";
 import { auth } from "../services/firebase";
+import { useNavigate } from "react-router-dom";
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+    const navigate = useNavigate();
 
   const login = async () => {
     setMsg(null);
     setLoading(true);
     try {
       await signInWithEmailAndPassword(auth, email, pw);
+      navigate("/app");
     } catch {
       setMsg("로그인 실패: 이메일/비밀번호를 확인해 주세요.");
     } finally {

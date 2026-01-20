@@ -1,9 +1,9 @@
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 
-import Home from "./components/src/pages/Home";
-import Login from "./components/Login";
-import App from "./App";
+import Home from "./pages/Home";
+import App from "../App";
+import Login from "../components/Login";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("root not found");

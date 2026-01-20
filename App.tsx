@@ -14,7 +14,10 @@ import { analyzeScriptToScenes, generateSceneImage, generateSingleAudio, generat
 import { Loader2, Sparkles, ChevronLeft, PlayCircle, StopCircle, CheckCircle2, Music, X, Monitor, Mic2, ImageIcon, Plus, Type, Wand2 } from 'lucide-react';
 import JSZip from 'jszip';
 import { Undo2, Redo2 } from 'lucide-react';
-
+const API_KEY =
+  typeof window !== "undefined"
+    ? localStorage.getItem("GEMINI_API_KEY") || ""
+    : "";
 
   const VOICE_LABEL_MAP: Record<string, string> = {
   // 여성
@@ -293,23 +296,15 @@ const SCENE_GAP_SECONDS = 0;
 const SCENE_GAP_SAMPLES = Math.round(SCENE_GAP_SECONDS * AUDIO_SR);
 
 const App: React.FC = () => {
+    const API_KEY = useMemo(() => {
+    return localStorage.getItem("GEMINI_API_KEY") || "";
+  }, []);
+    const [viewMode, setViewMode] = useState<'setup' | 'workspace'>('setup');
   const sceneRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const [previewWidth, setPreviewWidth] = useState(0);
   
-  const API_KEY = (localStorage.getItem("GEMINI_API_KEY") || undefined) as
-    | string
-    | undefined;
 
-
-
-
-  const [viewMode, setViewMode] = useState<'setup' | 'workspace'>('setup');
-  const [statusLog, setStatusLog] = useState<string>('대기 중...');
-  const [hasKey, setHasKey] = useState<boolean>(false);
-  useEffect(() => {
-  setHasKey(true);
-}, []);
 
   const [state, setState] = useState<AppState>({
     script: '', scenes: [], metadata: null, selectedStyle: ArtStyle.REALISTIC, selectedVoice: 'Achird',
@@ -1472,7 +1467,7 @@ const handleSeek = async (time: number) => {
     <div className="min-h-screen bg-black text-zinc-100 flex flex-col overflow-hidden">
       {viewMode === 'setup' ? (
         <>
-          <Header onKeyStatusChange={setHasKey} />
+          <Header />
           <main className="w-full mx-auto px-24 py-6 flex flex-col gap-4 overflow-y-auto">
             <section className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-6">
               <VideoSettingsPanel
