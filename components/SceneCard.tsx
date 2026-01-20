@@ -29,7 +29,7 @@ const SceneCard: React.FC<SceneCardProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [isImageRegenerating, setIsImageRegenerating] = useState(false);
 const [isAudioRegenerating, setIsAudioRegenerating] = useState(false);
-
+  const isExporting = (window as any).__NOGGANG_IS_EXPORTING__ === true;
   const imageEditorRef = useRef<HTMLDivElement>(null);
   const audioEditorRef = useRef<HTMLDivElement>(null);
   const imageBtnRef = useRef<HTMLButtonElement>(null);
@@ -104,21 +104,33 @@ const handleDrop = (e: React.DragEvent) => {
 
   const dt = e.dataTransfer;
 
-  // 1️⃣ Scene → Scene 드래그 복사
-  const sceneImage = dt.getData('application/x-scene-image');
-  if (sceneImage) {
-    const isVideo = sceneImage.startsWith('data:video/');
-    onImageUpload(scene.id, sceneImage, isVideo ? 'video' : 'image');
+  // 1️⃣ Scene → Scene 복사
+  const scenePayload = dt.getData('application/x-scene-image');
+  if (scenePayload) {
+    try {
+      const parsed = JSON.parse(scenePayload);
+      onImageUpload(
+        scene.id,
+        parsed.url,
+        parsed.type === 'video' ? 'video' : 'image'
+      );
+    } catch {
+      const isVideo = scenePayload.startsWith('data:video/');
+      onImageUpload(scene.id, scenePayload, isVideo ? 'video' : 'image');
+    }
     return;
   }
 
-  // 2️⃣ 파일 드롭 (탐색기)
-  const file = dt.files?.[0];
-  if (file) {
+  // 2️⃣ 탐색기 파일 → Scene
+  if (dt.files && dt.files.length > 0) {
+    const file = dt.files[0];
     const type = file.type.startsWith('video/') ? 'video' : 'image';
+
     const reader = new FileReader();
-    reader.onload = (ev) =>
-      onImageUpload(scene.id, ev.target?.result as string, type);
+    reader.onload = (ev) => {
+      if (!ev.target?.result) return;
+      onImageUpload(scene.id, ev.target.result as string, type);
+    };
     reader.readAsDataURL(file);
   }
 };
@@ -170,7 +182,11 @@ const handleDrop = (e: React.DragEvent) => {
    }
    onClick();
  }}
-      onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+      onDragOver={(e) => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  setIsDragging(true);
+}}
       onDragLeave={() => setIsDragging(false)}
       onDrop={handleDrop}
       className={`
@@ -199,7 +215,16 @@ const handleDrop = (e: React.DragEvent) => {
             </>
           )}
         </div>
-        <button onClick={(e) => { e.stopPropagation(); onDeleteScene(scene.id); }} className="text-zinc-600 hover:text-red-400 transition-colors p-1">
+       <button
+  disabled={isExporting}
+  onClick={(e) => {
+    e.stopPropagation();
+    if (isExporting) return;
+    onDeleteScene(scene.id);
+  }}
+  className={`p-1 transition-colors ${isExporting ? 'text-zinc-700 cursor-not-allowed' : 'text-zinc-600 hover:text-red-400'}`}
+>
+
           <Trash2 className="w-3 h-3" />
         </button>
       </div>
@@ -229,10 +254,13 @@ const handleDrop = (e: React.DragEvent) => {
 
         e.dataTransfer.clearData();
         e.dataTransfer.effectAllowed = 'copy';
-        e.dataTransfer.setData(
-          'application/x-scene-image',
-          scene.imageUrl
-        );
+       e.dataTransfer.setData(
+  'application/x-scene-image',
+  JSON.stringify({
+    url: scene.imageUrl,
+    type: scene.userAssetType || 'image'
+  })
+);
       }}
     />
   ) : (
@@ -247,10 +275,13 @@ const handleDrop = (e: React.DragEvent) => {
 
         e.dataTransfer.clearData();
         e.dataTransfer.effectAllowed = 'copy';
-        e.dataTransfer.setData(
-          'application/x-scene-image',
-          scene.imageUrl
-        );
+       e.dataTransfer.setData(
+  'application/x-scene-image',
+  JSON.stringify({
+    url: scene.imageUrl,
+    type: scene.userAssetType || 'image'
+  })
+);
       }}
     />
   )
@@ -289,7 +320,11 @@ const handleDrop = (e: React.DragEvent) => {
                <div className="flex gap-2 justify-end">
                 <button 
                   ref={imageBtnRef}
-                  onClick={(e) => { e.stopPropagation(); handleConfirmRegen('image'); }} 
+                  onClick={(e) => {
+  e.stopPropagation();
+  if (isExporting) return;
+  handleConfirmRegen('image');
+}}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black transition-all border shadow-sm ${showImageEditor ? 'bg-yellow-400 text-black border-yellow-500' : 'bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20 active:scale-95'}`}
                 >
                   {isImageRegenerating
@@ -301,7 +336,11 @@ const handleDrop = (e: React.DragEvent) => {
                 </button>
                <button 
   ref={audioBtnRef}
-  onClick={(e) => { e.stopPropagation(); handleConfirmRegen('audio'); }} 
+ onClick={(e) => {
+  e.stopPropagation();
+  if (isExporting) return;
+  handleConfirmRegen('audio');
+}}
   disabled={scene.status === 'generating' && !scene.audioBuffer}
   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black transition-all border shadow-sm ${showAudioEditor ? 'bg-yellow-400 text-black border-yellow-500' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20 active:scale-95'}`}
 >

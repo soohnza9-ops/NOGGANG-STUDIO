@@ -130,8 +130,7 @@ const synthesizePreviewMp3 = async () => {
 
     const text = convertToKoreanSpeech(previewText || '');
     if (!text) throw new Error('미리듣기 텍스트가 비어 있습니다.');
-
-    const speakingRate = Math.max(0.25, Math.min(4.0, Number(voiceSpeed) || 1.0));
+const speakingRate = Math.max(0.5, Math.min(2.0, Number(voiceSpeed) || 1.0));
 
     const res = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${API_KEY}`, {
       method: 'POST',
@@ -235,12 +234,13 @@ const synthesizePreviewMp3 = async () => {
   };
 
   return (
-    <div className="bg-[#0a0a0a] p-6 rounded-[1.5rem] border border-zinc-800/50 space-y-6">
+   <div className="bg-[#0a0a0a] pt-8 pb-6 px-6 rounded-[1.5rem] border border-zinc-800/50 space-y-6">
+
       {/* 헤더 + 속도 */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
-          <Mic2 className="w-4 h-4 text-yellow-400" />
-          <label className="text-base font-black text-zinc-300 uppercase tracking-tighter">
+          <Mic2 className="w-6 h-6 text-yellow-400" />
+          <label className="text-[18px] font-black text-zinc-300 uppercase tracking-tighter">
             성우 선택
           </label>
         </div>
@@ -257,16 +257,17 @@ const synthesizePreviewMp3 = async () => {
             {Number(voiceSpeed).toFixed(2)}x
           </span>
 
-          <input
-            type="range"
-            min="0.25"
-            max="4.0"
-            step="0.05"
-            value={voiceSpeed}
-            onChange={(e) => onSpeedChange(parseFloat(e.target.value))}
-            className="w-[220px] h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-            disabled={disabled}
-          />
+         <input
+  type="range"
+  min="0.5"
+  max="2.0"
+  step="0.1"
+  value={voiceSpeed}
+  onChange={(e) => onSpeedChange(parseFloat(e.target.value))}
+  className="w-[220px] h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+  disabled={disabled}
+/>
+
         </div>
       </div>
 
@@ -300,18 +301,21 @@ const synthesizePreviewMp3 = async () => {
           />
         </div>
 
-        <div className="h-[120px] flex-1 bg-[#141414] rounded-xl border border-zinc-800/50 p-3 flex flex-col">
+        <div className="h-[120px] flex-1 bg-[#141414] rounded-xl border border-zinc-800/50 pt-4 pb-3 px-3 flex flex-col">
+
           {/* ✅ 상단: 실시간 미리듣기 정보 (폰트 살짝 키움) */}
-          <div className="min-w-0">
-            <div className="text-[12px] font-black text-zinc-300 tracking-tighter uppercase">
-              실시간 미리듣기
-            </div>
-            <div className="text-[12px] font-bold text-zinc-500 truncate mt-0.5">
-              선택 성우: <span className="text-zinc-200">{selected.label}</span>
-              <span className="text-zinc-700"> · </span>
-              속도: <span className="text-emerald-400">{Number(voiceSpeed).toFixed(2)}x</span>
-            </div>
-          </div>
+        <div className="min-w-0 flex items-center gap-3 flex-wrap">
+  <div className="text-[15px] font-black text-zinc-300 tracking-tighter uppercase">
+    실시간 미리듣기
+  </div>
+
+  <div className="text-[12px] font-bold text-zinc-500 truncate">
+    선택 성우: <span className="text-zinc-200">{selected.label}</span>
+    <span className="text-zinc-700"> · </span>
+    속도: <span className="text-emerald-400">{Number(voiceSpeed).toFixed(2)}x</span>
+  </div>
+</div>
+
 
           {/* ✅ 하단으로 밀기: 입력+재생이 박스 하단에 붙음 */}
          {/* ✅ 하단: 입력+재생 (박스 하단 고정, 정보랑 간격 확보) */}
@@ -322,12 +326,12 @@ const synthesizePreviewMp3 = async () => {
       onChange={(e) => setPreviewText(e.target.value)}
       placeholder="미리듣기 문장을 입력하세요."
       disabled={disabled}
-      className="
-        flex-1 min-w-0 h-11 px-3 rounded-xl
-        bg-[#0a0a0a] border border-zinc-800
-        text-zinc-100 placeholder:text-zinc-600
-        outline-none focus:border-zinc-700
-      "
+     className="
+  flex-1 min-w-0 h-14 px-3 rounded-xl
+  bg-[#0a0a0a] border border-zinc-800
+  text-zinc-100 placeholder:text-zinc-600
+  outline-none focus:border-zinc-700
+"
     />
 
     <button

@@ -16,7 +16,8 @@ const VideoSettingsPanel: React.FC<VideoSettingsPanelProps> = ({ settings, onCha
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 text-zinc-400 font-bold text-lg border-b border-zinc-800 pb-2">
+     <div className="flex items-center gap-2 text-white font-black text-xl border-b border-zinc-800 pb-2">
+
         <Layers className="w-5 h-5 text-yellow-400" />
         영상 및 자막 설정
       </div>

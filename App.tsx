@@ -1508,6 +1508,14 @@ const handleSeek = async (time: number) => {
                 disabled={state.isAnalyzing}
               />
 
+               <AdvancedSettings
+                characterPrompt={state.characterPrompt}
+                onCharacterPromptChange={v => setState(p => ({ ...p, characterPrompt: v }))}
+                atmospherePrompt={state.atmospherePrompt}
+                onAtmospherePromptChange={v => setState(p => ({ ...p, atmospherePrompt: v }))}
+                disabled={state.isAnalyzing}
+              />
+
               <AssetLibrary
                 assets={state.userAssets}
                 onAssetsChange={a => setState(p => ({ ...p, userAssets: a }))}
@@ -1516,24 +1524,20 @@ const handleSeek = async (time: number) => {
                 disabled={state.isAnalyzing}
               />
 
-              <AdvancedSettings
-                characterPrompt={state.characterPrompt}
-                onCharacterPromptChange={v => setState(p => ({ ...p, characterPrompt: v }))}
-                atmospherePrompt={state.atmospherePrompt}
-                onAtmospherePromptChange={v => setState(p => ({ ...p, atmospherePrompt: v }))}
-                disabled={state.isAnalyzing}
-              />
+            
             </section>
 
            <section className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 pointer-events-auto">
 
-              <ScriptInput
-                value={state.script}
-                onChange={(t) => setState(p => ({ ...p, script: t }))}
-                disabled={state.isAnalyzing}
-                mode="script"
-                onModeChange={() => {}}
-              />
+<ScriptInput
+  value={state.script}
+  onChange={(t) => setState(p => ({ ...p, script: t }))}
+  disabled={state.isAnalyzing}
+  mode="script"
+  onModeChange={() => {}}
+  speed={state.voiceSpeed}
+/>
+
          <button
   type="button"
   disabled={state.isAnalyzing}

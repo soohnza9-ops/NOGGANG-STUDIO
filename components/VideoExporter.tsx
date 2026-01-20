@@ -1,6 +1,5 @@
 
-
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { VideoSettings, YouTubeMetadata, SceneTimelineEntry } from '../types';
 
@@ -65,9 +64,10 @@ const VideoExporter: React.FC<{
   setExportProgress
 }) => {
 
-  const [error, setError] = useState<string | null>(null);
-  const [showStopConfirm, setShowStopConfirm] = useState(false);
 
+  const [showStopConfirm, setShowStopConfirm] = useState(false);
+const exportingBtnWrapRef = useRef<HTMLDivElement | null>(null);
+const [stopBtnPos, setStopBtnPos] = useState<{ top: number; left: number } | null>(null);
   const cancelRef = useRef(false);
   const jobIdRef = useRef<string | null>(null);
 
@@ -81,7 +81,27 @@ useEffect(() => {
     document.body.style.overflow = prev;
   };
 }, [showStopConfirm]);
+useLayoutEffect(() => {
+if (!isExporting || showStopConfirm) {
+     setStopBtnPos(null);
+     return;
+   }
 
+   const update = () => {
+     const el = exportingBtnWrapRef.current;
+     if (!el) return;
+         const r = el.getBoundingClientRect();
+     setStopBtnPos({ top: r.top - 8, left: r.right - 8 });
+   };
+
+   update();
+   window.addEventListener('resize', update);
+  window.addEventListener('scroll', update, true);
+   return () => {
+     window.removeEventListener('resize', update);
+     window.removeEventListener('scroll', update, true);
+   };
+ }, [isExporting, exportProgress]);
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
   const getBalancedLines = (
@@ -229,10 +249,14 @@ useEffect(() => {
   const getVideoBitmapAt = async (url: string, sceneStart: number, sceneEnd: number, t: number) => {
     const vid = await ensureVideo(url);
 
-    const sceneDur = Math.max(0.001, sceneEnd - sceneStart);
-    const dur = Number.isFinite(vid.duration) && vid.duration > 0 ? vid.duration : 0;
-    const p = Math.max(0, Math.min(1, (t - sceneStart) / sceneDur));
-    const target = dur > 0 ? p * dur : 0;
+ const sceneDur = Math.max(0.001, sceneEnd - sceneStart);
+const dur = Number.isFinite(vid.duration) && vid.duration > 0 ? vid.duration : 0;
+
+// 장면 길이에 맞춰 "늘려서" 재생 (루프 ❌)
+const elapsed = Math.max(0, t - sceneStart);
+const ratio = dur > 0 ? Math.min(1, elapsed / sceneDur) : 0;
+const target = dur * ratio;
+
 
     try {
       if (vid.readyState < 2) {
@@ -534,146 +558,133 @@ useEffect(() => {
     ctx.restore();
   };
 
-  const handleStopExport = async () => {
-    cancelRef.current = true;
+const handleStopExport = async () => {
+  cancelRef.current = true;
 
-    const jobId = jobIdRef.current;
-    if (jobId && window.NOGGANG_EXPORT?.exportCancel) {
-      try {
-        await window.NOGGANG_EXPORT.exportCancel({ jobId });
-      } catch {}
-    }
+  const jobId = jobIdRef.current;
+  if (jobId && window.NOGGANG_EXPORT?.exportCancel) {
+    try {
+      await window.NOGGANG_EXPORT.exportCancel({ jobId });
+    } catch {}
+  }
 
-    jobIdRef.current = null;
-    setIsExporting(false);
-    setShowStopConfirm(false);
-    setExportProgress(0);
-    setError('사용자가 제작을 취소했습니다.');
-  };
+  jobIdRef.current = null;
 
-
+  setShowStopConfirm(false);
+  setIsExporting(false);
+  setExportProgress(0);
+};
 
 
-   const handleExport = async () => {
-    if (isExporting || !fullSpeechAudioBuffer) return;
 
-     if (!window.NOGGANG_EXPORT) {
-    setError('Electron export 브릿지가 없습니다. (window.NOGGANG_EXPORT 미존재)');
+
+const handleExport = async () => {
+  if (isExporting || !fullSpeechAudioBuffer) return;
+
+  if (!window.NOGGANG_EXPORT) {
+    alert('Electron으로 실행 중이 아닙니다.');
     return;
   }
 
   const picked = await window.NOGGANG_EXPORT.chooseExportDir();
-  if (picked.canceled || !picked.dirPath) {
-    return;
-  }
+  if (picked.canceled || !picked.dirPath) return;
+
   const outputDir = picked.dirPath;
 
   cancelRef.current = false;
   setIsExporting(true);
-  setError(null);
   setExportProgress(0);
 
+  try {
+    const [w, h] = settings.aspectRatio === '16:9' ? [1920, 1080] : [1080, 1920];
 
-    try {
-      const [w, h] = settings.aspectRatio === '16:9' ? [1920, 1080] : [1080, 1920];
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
 
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('2D 컨텍스트 생성 실패');
 
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('2D 컨텍스트 생성 실패');
+    const timelineEnd = sceneTimeline.length
+      ? sceneTimeline[sceneTimeline.length - 1].end
+      : 0;
 
-      const timelineEnd = sceneTimeline?.length ? sceneTimeline[sceneTimeline.length - 1].end : 0;
-      const speechDur = fullSpeechAudioBuffer.length / (fullSpeechAudioBuffer.sampleRate || 24000);
-      const totalDuration = Math.max(timelineEnd, speechDur);
+    const speechDur =
+      fullSpeechAudioBuffer.length /
+      (fullSpeechAudioBuffer.sampleRate || 24000);
 
-      const fps = 24;
-const totalFrames = Math.ceil(totalDuration * fps);
+    const totalDuration = Math.max(timelineEnd, speechDur);
 
-      const title = metadata?.title || 'video';
+    const fps = 24;
+    const totalFrames = Math.ceil(totalDuration * fps);
 
-          const begin = await window.NOGGANG_EXPORT.exportBegin({
-        width: w,
-        height: h,
-        fps,
-        totalFrames,
-        title,
-        outputDir
+    const title = metadata?.title || 'video';
+
+    const begin = await window.NOGGANG_EXPORT.exportBegin({
+      width: w,
+      height: h,
+      fps,
+      totalFrames,
+      title,
+      outputDir
+    });
+
+    jobIdRef.current = begin.jobId;
+
+    const wavBytes = await mixSpeechAndBgmToWav(totalDuration);
+    if (cancelRef.current) throw new Error('CANCELLED');
+
+    await window.NOGGANG_EXPORT.exportWriteAudioWav({
+      jobId: begin.jobId,
+      wavBytes
+    });
+
+    for (let f = 0; f < totalFrames; f++) {
+      if (cancelRef.current) break;
+
+      const t = f / fps;
+      await renderFrame(ctx, w, h, t, sceneTimeline, settings);
+
+      const pngBytes = await new Promise<Uint8Array>((resolve, reject) => {
+        canvas.toBlob(
+          async (blob) => {
+            if (!blob) return reject(new Error('blob 실패'));
+            const ab = await blob.arrayBuffer();
+            resolve(new Uint8Array(ab));
+          },
+          'image/jpeg',
+          0.92
+        );
       });
 
-
-      jobIdRef.current = begin.jobId;
-
-      const wavBytes = await mixSpeechAndBgmToWav(totalDuration);
-      if (cancelRef.current) throw new Error('CANCELLED');
-
-      await window.NOGGANG_EXPORT.exportWriteAudioWav({
+      await window.NOGGANG_EXPORT.exportWriteFrame({
         jobId: begin.jobId,
-        wavBytes
+        frameIndex: f,
+        pngBytes
       });
 
-      for (let f = 0; f < totalFrames; f++) {
-        if (cancelRef.current) throw new Error('CANCELLED');
-
-        const t = f / fps;
-        await renderFrame(ctx, w, h, t, sceneTimeline, settings);
-
-        const pngBytes = await new Promise<Uint8Array>((resolve, reject) => {
-  canvas.toBlob(
-    async (blob) => {
-      try {
-        if (!blob) return reject(new Error('JPEG blob 생성 실패'));
-        const ab = await blob.arrayBuffer();
-        resolve(new Uint8Array(ab));
-      } catch (e: any) {
-        reject(e);
+      if (f % 10 === 0) {
+        setExportProgress(Math.round((f / totalFrames) * 100));
+        await sleep(0);
       }
-    },
-    'image/jpeg',
-    0.92
-  );
-});
-
-
-        await window.NOGGANG_EXPORT.exportWriteFrame({
-          jobId: begin.jobId,
-          frameIndex: f,
-          pngBytes
-        });
-
-        if (f % 10 === 0) {
-          setExportProgress(Math.round((f / totalFrames) * 100));
-          await sleep(0);
-        }
-      }
-
-      setExportProgress(100);
-
-      const done = await window.NOGGANG_EXPORT.exportFinalize({ jobId: begin.jobId });
-
-      jobIdRef.current = null;
-      setIsExporting(false);
-      setError(`완료: ${done.outputPath}`);
-    } catch (err: any) {
-      const msg = err?.message || String(err);
-
-      if (msg !== 'CANCELLED') {
-        setError(msg);
-        setIsExporting(false);
-      }
-
-      const jobId = jobIdRef.current;
-      if (jobId && window.NOGGANG_EXPORT?.exportCancel) {
-        try {
-          await window.NOGGANG_EXPORT.exportCancel({ jobId });
-        } catch {}
-      }
-
-      jobIdRef.current = null;
-      setIsExporting(false);
     }
-  };
+
+    setExportProgress(100);
+    await window.NOGGANG_EXPORT.exportFinalize({ jobId: begin.jobId });
+  } catch (e) {
+    const jobId = jobIdRef.current;
+    if (jobId) {
+      try {
+        await window.NOGGANG_EXPORT.exportCancel({ jobId });
+      } catch {}
+    }
+  } finally {
+    jobIdRef.current = null;
+    cancelRef.current = false;
+    setIsExporting(false);
+  }
+};
+
 
 
 
@@ -708,25 +719,15 @@ const totalFrames = Math.ceil(totalDuration * fps);
   return (
     <div className="space-y-4">
       <div className="flex gap-3">
-        {isExporting ? (
-          <div className="relative w-2/3 overflow-visible">
-            <button
-              disabled
-              className="w-full py-4 rounded-2xl font-black text-xl bg-yellow-400 text-black flex items-center justify-center gap-2"
-            >
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <span>제작 중 ({exportProgress}%)</span>
-            </button>
+{isExporting && !showStopConfirm ? (
+  <div ref={exportingBtnWrapRef} className="relative w-2/3">
+    <div className="w-full py-4 rounded-2xl font-black text-xl bg-yellow-400 text-black flex items-center justify-center gap-2 pointer-events-none">
+      <Loader2 className="w-5 h-5 animate-spin" />
+      <span>제작 중 ({exportProgress}%)</span>
+    </div>
+  </div>
+) : (
 
-            <button
-              onClick={() => setShowStopConfirm(true)}
-              className="absolute -top-2 -right-2 w-8 h-8 bg-red-600 text-white rounded-full flex items-center justify-center z-[50]"
-              type="button"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-        ) : (
           <button
             onClick={handleExport}
             disabled={isExporting}
@@ -748,13 +749,33 @@ const totalFrames = Math.ceil(totalDuration * fps);
       </div>
 
       {stopConfirmModal}
+{isExporting && stopBtnPos && !showStopConfirm
+  ? ReactDOM.createPortal(
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          setShowStopConfirm(true);
+        }}
+        type="button"
+        style={{
+          position: 'fixed',
+          top: stopBtnPos.top,
+          left: stopBtnPos.left,
+          transform: 'translate(-100%, 0)',
+          zIndex: 2147483647,
+          pointerEvents: 'auto'
+        }}
+        className="w-8 h-8 bg-red-600 text-white rounded-full flex items-center justify-center shadow-lg"
+      >
+        <X className="w-5 h-5" />
+      </button>,
+      document.body
+    )
+  : null}
 
-      {error && (
-        <div className="p-4 bg-red-950/30 border border-red-900/50 text-red-400 text-xs font-bold rounded-xl flex items-center gap-2 whitespace-pre-wrap">
-          <AlertCircle className="w-4 h-4" />
-          {error}
-        </div>
-      )}
+
+  
     </div>
   );
 };

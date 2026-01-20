@@ -54,11 +54,44 @@ const AssetLibrary: React.FC<AssetLibraryProps> = ({
     <div className="space-y-4">
       <div className="flex items-center justify-between w-full">
         <div className="flex items-center gap-2">
-          <ImageIcon className="w-4 h-4 text-emerald-400" />
-          <label className="text-base font-black text-zinc-400  uppercase tracking-widest">
-            사용자 에셋 라이브러리 (이미지/영상)
-          </label>
-        </div>
+  <ImageIcon className="w-7 h-7 text-emerald-400 relative -top-[10px]" />
+  <div className="flex flex-col">
+    <label className="text-base font-black text-zinc-400 uppercase tracking-widest">
+      사용자 에셋 업로드 (이미지/영상)
+    </label>
+    <span className="text-xs font-medium text-zinc-500 tracking-tight mt-2">
+      * 사용자가 업로드한 자료를 랜덤으로 배치 후 나머지는 AI가 생성합니다.
+    </span>
+  </div>
+</div>
+
+{assets.length > 0 && (
+  <div className="flex justify-end">
+    <button
+      onClick={() => {
+        if (disabled) return;
+        onAssetsChange([]);
+      }}
+      disabled={disabled}
+      className={`
+        flex items-center gap-2
+        px-6 py-3
+        border-2
+        rounded-xl
+        text-sm font-black
+        transition-all
+        disabled:opacity-50
+        border-red-500/40 text-red-400
+        hover:bg-red-500/10
+      `}
+    >
+      <X className="w-4 h-4" />
+      전체 삭제
+    </button>
+  </div>
+)}
+
+
         
         {/* 설정 페이지 전용 토글 버튼 - 텍스트 변경: 형님 요청사항 반영 */}
         {onSkipInitialImageGenChange !== undefined && (
@@ -71,7 +104,7 @@ const AssetLibrary: React.FC<AssetLibraryProps> = ({
             }`}
           >
             {skipInitialImageGen ? <CheckCircle2 className="w-4 h-4" /> : <Circle className="w-4 h-4" />}
-            AI 이미지 생성 및 에셋 자동 배치를 생략하고, 오디오만 생성하여 시작 (수동 업로드 모드)
+            AI 이미지 생성을 생략하고, 오디오만 생성하여 시작 (수동 업로드 모드)
           </button>
         )}
 
@@ -88,24 +121,71 @@ const AssetLibrary: React.FC<AssetLibraryProps> = ({
         )}
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">
+     <div
+className="grid gap-3 grid-cols-[repeat(auto-fill,192px)]"
+
+  onDragOver={(e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }}
+  onDrop={(e) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files || []);
+    if (!files.length) return;
+
+    const input = fileInputRef.current;
+    if (!input) return;
+
+    const dt = new DataTransfer();
+    files.forEach((f) => dt.items.add(f));
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }}
+>
+
         {assets.map((asset) => (
-          <div key={asset.id} className="relative aspect-video rounded-xl border border-zinc-800 bg-black overflow-hidden group">
+        <div
+  key={asset.id}
+  draggable
+  onDragStart={(e) => {
+    e.stopPropagation();
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.clearData();
+    e.dataTransfer.setData(
+      'application/x-scene-image',
+      JSON.stringify({
+        url: asset.url,
+        type: asset.type
+      })
+    );
+  }}
+className="
+  relative aspect-video
+  min-h-[96px]
+  rounded-xl border border-zinc-800
+  bg-black overflow-hidden
+  group cursor-grab
+  z-10
+"
+
+>
+
             {asset.type === 'video' ? (
-              <video 
-                src={asset.url} 
-                className="w-full h-full object-cover" 
-                muted
-                playsInline
-                autoPlay
-                onCanPlay={(e) => { 
-                  e.currentTarget.muted = true;
-                  e.currentTarget.pause(); 
-                  e.currentTarget.currentTime = 0.5; 
-                }}
-              />
+              <video
+  src={asset.url}
+  className="w-full h-full object-cover pointer-events-none"
+  muted
+  playsInline
+  preload="metadata"
+/>
+
             ) : (
-              <img src={asset.url} className="w-full h-full object-cover" alt={asset.name} />
+              <img
+  src={asset.url}
+  className="w-full h-full object-cover pointer-events-none"
+  alt={asset.name}
+/>
+
             )}
             <button
               onClick={() => removeAsset(asset.id)}
@@ -120,11 +200,30 @@ const AssetLibrary: React.FC<AssetLibraryProps> = ({
           </div>
         ))}
         
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={disabled}
-          className="aspect-video rounded-xl border-2 border-dashed border-zinc-800 bg-zinc-900/30 flex flex-col items-center justify-center gap-1 hover:border-zinc-700 hover:bg-zinc-900 transition-all text-zinc-500 disabled:opacity-50 group"
-        >
+<button
+  onClick={() => fileInputRef.current?.click()}
+  disabled={disabled}
+className="
+  relative
+  z-0
+  aspect-video
+  min-h-[96px]
+  rounded-xl
+  border-2 border-dashed border-zinc-800
+  bg-zinc-900/30
+  flex flex-col items-center justify-center
+  gap-2
+  hover:border-zinc-700 hover:bg-zinc-900
+  transition-all
+  text-zinc-500
+  disabled:opacity-50
+  group
+"
+
+>
+
+
+
           <Plus className="w-5 h-5 group-hover:text-emerald-400 transition-colors" />
           <span className="text-[10px] font-bold">추가하기</span>
         </button>

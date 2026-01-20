@@ -73,7 +73,7 @@ const BgmSelector: React.FC<Props> = ({
 
       {/* ✅ 1) 한 줄: 아이콘 + BGM(베이스) + '볼륨' + 슬라이더 + % */}
       <div className="flex items-center gap-2">
-        <Music className="w-4 h-4 text-sky-300 shrink-0" />
+        <Music className="w-6 h-6 text-sky-300 shrink-0" />
 
         {/* BGM 글자: 베이스 폰트 */}
         <div className="text-base font-black text-zinc-200 leading-none shrink-0">
@@ -176,7 +176,7 @@ const BgmSelector: React.FC<Props> = ({
             type="range"
             min={0}
             max={1}
-            step={0.01}
+            step={0.05}
             value={clamp01(volume)}
             onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
             disabled={disabled}
@@ -222,7 +222,7 @@ const BgmSelector: React.FC<Props> = ({
           type="range"
           min={0}
           max={1}
-          step={0.01}
+          step={0.05}
           value={clamp01(volume)}
           onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
           disabled={disabled}

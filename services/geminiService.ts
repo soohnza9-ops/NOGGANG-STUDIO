@@ -193,24 +193,39 @@ export const analyzeScriptToScenes = async (
   subtitleSize: SubtitleSize,
   aspectRatio: AspectRatio
 ): Promise<{ scenes: Scene[], metadata: YouTubeMetadata }> => {
-script = script.replace(/\n+/g, " ").replace(/\s+/g, " ").trim();
+  script = script.replace(/\n+/g, " ").replace(/\s+/g, " ").trim();
   const ai = new GoogleGenAI({ apiKey });
-
-
 
   const MAX_RULE_RETRY = 1;
   let lastError: any = null;
 
   for (let attempt = 1; attempt <= MAX_RULE_RETRY; attempt++) {
     try {
+      // 1) 세계관 요약(메타+월드)만 생성
       const response: GenerateContentResponse = await withRetry(() =>
         ai.models.generateContent({
           model: "gemini-2.5-flash",
-          contents: `대본:\n${script}\n\n스타일: ${combinedPrompt}`,
-          config: {
-  responseMimeType: "application/json",
-  responseSchema: {
+          contents: `
+대본:
+${script}
 
+너는 영상 제작용 "세계관 요약"만 만든다. (장면 프롬프트 만들지 마라)
+
+반드시 JSON으로만 답하라.
+
+규칙:
+- title/subject/storyContext는 한국어로
+- characters/locations/objects는 한국어 키워드 배열로 (최대 8개씩)
+- storyContext는 시대/장소/주요 존재(예: 호랑이/나무꾼/마을 등)를 포함
+- 동물/주인공이 있으면 characters에 반드시 포함
+- 무엇을 그릴지(visualPrompt) 생성 금지
+
+스타일 가이드:
+${combinedPrompt}
+          `.trim(),
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
               type: Type.OBJECT,
               properties: {
                 metadata: {
@@ -222,94 +237,160 @@ script = script.replace(/\n+/g, " ").replace(/\s+/g, " ").trim();
                   },
                   required: ["title", "subject", "storyContext"]
                 },
-               visualPrompts: {
-  type: Type.ARRAY,
-  items: { type: Type.STRING }
-}
-
+                world: {
+                  type: Type.OBJECT,
+                  properties: {
+                    characters: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    locations: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    objects: { type: Type.ARRAY, items: { type: Type.STRING } }
+                  },
+                  required: ["characters", "locations", "objects"]
+                }
               },
-              required: ["metadata", "visualPrompts"]
+              required: ["metadata", "world"]
             }
           }
         })
       );
 
-      const text = response.text || "";
-     const data = JSON.parse(text);
+      const text = response.text || "{}";
+      const data = JSON.parse(text);
+
+      const world = data.world || { characters: [], locations: [], objects: [] };
 
 
-const sentences = script.match(/(\[[^\]]+\]|[^.!?]+[.!?])/g) || [];
+      // 2) 코드로 장면 분할
+      const sentences = script.match(/(\[[^\]]+\]|[^.!?]+[.!?])/g) || [];
 
-const limits =
-  aspectRatio === '9:16'
-    ? subtitleSize === 'L'
-      ? { min: 15, max: 20 }
-      : subtitleSize === 'M'
-        ? { min: 15, max: 30 }
-        : { min: 20, max: 40 }
-    : subtitleSize === 'L'
-      ? { min: 22, max: 40 }
-      : subtitleSize === 'M'
-        ? { min: 27, max: 55 }
-        : { min: 30, max: 80 };
+      const limits =
+        aspectRatio === '9:16'
+          ? subtitleSize === 'L'
+            ? { min: 15, max: 20 }
+            : subtitleSize === 'M'
+              ? { min: 15, max: 25 }
+              : { min: 20, max: 35 }
+          : subtitleSize === 'L'
+            ? { min: 22, max: 40 }
+            : subtitleSize === 'M'
+              ? { min: 27, max: 55 }
+              : { min: 30, max: 70 };
 
-const scenes: Scene[] = [];
-let buf = "";
+      const scenes: Scene[] = [];
+      let buf = "";
 
-for (const s of sentences) {
-  if (!buf) {
-    buf = s;
-    continue;
-  }
+      for (const s of sentences) {
+        if (!buf) {
+          buf = s;
+          continue;
+        }
 
-  if ((buf + " " + s).length <= limits.max) {
-    buf += " " + s;
-  } else {
-    scenes.push({
-      id: "",
-     subtitle: buf,
-      visualPrompt: "",
-      status: "pending",
-      isHeader: isHeaderSubtitle(buf),
-      syncOffset: 0
-    });
-    buf = s;
-  }
-}
+        if ((buf + " " + s).length <= limits.max) {
+          buf += " " + s;
+        } else {
+          scenes.push({
+            id: "",
+            subtitle: buf,
+            visualPrompt: "",
+            status: "pending",
+            isHeader: isHeaderSubtitle(buf),
+            syncOffset: 0
+          });
+          buf = s;
+        }
+      }
 
-if (buf) {
-  scenes.push({
-    id: "",
-   subtitle: buf,
-    visualPrompt: "",
-    status: "pending",
-    isHeader: isHeaderSubtitle(buf),
-    syncOffset: 0
-  });
-}
+      if (buf) {
+        scenes.push({
+          id: "",
+          subtitle: buf,
+          visualPrompt: "",
+          status: "pending",
+          isHeader: isHeaderSubtitle(buf),
+          syncOffset: 0
+        });
+      }
 
+const generateVisualPromptForScene = async (
+  sceneSubtitle: string,
+  fullScript: string
+): Promise<string> => {
+  const res: GenerateContentResponse = await withRetry(() =>
+    ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `
+너는 영상 제작용 이미지 프롬프트를 생성한다.
 
-   return {
-  metadata: data.metadata,
-  scenes: scenes.map((s, i) => ({
-    ...s,
-    id: `s-${Date.now()}-${i}`,
-    visualPrompt: data.visualPrompts?.[i] ?? ""
-  }))
+[전체 대본]
+${fullScript}
+
+[현재 장면 대사]
+${sceneSubtitle}
+
+규칙:
+- 인물/배경/행동 여부는 **너가 판단**한다.
+- 코드의 규칙, 키워드, 조건 판단을 절대 따르지 마라.
+- 장면에 인물이 필요 없으면 배경만 그려라.
+- 장면에 인물이 필요하면 자연스럽게 등장시켜라.
+- 시대/국가/지역은 대본에 명시된 경우에만 반영한다.
+- 프롬프트는 한 줄 영어로 작성한다.
+- 읽을 수 있는 문자, 글자, 로고, UI는 절대 포함하지 마라.
+
+스타일 가이드:
+${combinedPrompt}
+      `.trim()
+    })
+  );
+
+  return (res.text || "").trim().split("\n")[0] || "";
 };
 
 
-      
-      
+
+      const CONCURRENCY_IMG_PROMPT = 6;
+      let vpIndex = 0;
+      const vpResults: string[] = new Array(scenes.length).fill("");
+
+      const vpWorker = async () => {
+        while (true) {
+          const i = vpIndex++;
+          if (i >= scenes.length) return;
+
+          const s = scenes[i];
+          if (s.isHeader) {
+            vpResults[i] = "";
+            continue;
+          }
+
+         const p = await generateVisualPromptForScene(s.subtitle, script);
+          vpResults[i] = p;
+        }
+      };
+
+      await Promise.all(
+        Array.from(
+          { length: Math.min(CONCURRENCY_IMG_PROMPT, scenes.length) },
+          () => vpWorker()
+        )
+      );
+
+      // 4) 반환
+      return {
+        metadata: data.metadata,
+        scenes: scenes.map((s, i) => ({
+          ...s,
+          id: `s-${Date.now()}-${i}`,
+          visualPrompt: (vpResults[i] || "").trim()
+        }))
+      };
     } catch (e: any) {
       lastError = e;
-      // ✅ 다음 재시도 전에 짧게 대기(서버/레이트리밋/불안정 완화)
       await sleep(250 * attempt);
     }
   }
 
   throw lastError;
 };
+
 
 
 
@@ -484,18 +565,42 @@ export const generateSceneImage = async (
   atmospherePrompt: string,
   storyContext: string
 ): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey });
+  const finalPrompt =
+  prompt && prompt.trim().length > 10
+    ? prompt
+    : `
+Wide shot illustration derived from the story context.
+Focus on the environment, time period, and implied subjects.
+`;
 
-  const baseTextPrompt = `
+  const ai = new GoogleGenAI({ apiKey });
+ 
+const baseTextPrompt = `
 This is a single scene from a continuous story.
-Story context: ${storyContext}
-The main subject must remain consistent across all scenes.
 
 Scene description:
-${prompt}
+${finalPrompt}
+SUBJECT REQUIREMENT (CRITICAL):
+- If the scene description explicitly mentions any subject (person/animal/object), you MUST depict it clearly.
+- Do NOT omit the subject and do NOT generate an empty environment when a subject is mentioned.
+- The main subject must be visible and recognizable in the frame.
+- If multiple subjects are mentioned, include them all.
+- Composition must prioritize the subject first, background second.
 
-Character details: ${characterPrompt}.
-Atmosphere: ${atmospherePrompt}.
+SCENE RULES:
+- Decide yourself whether people/animals are needed based on the scene description.
+- If the scene does not require people/animals, do NOT include them.
+- If the scene requires people/animals, include them naturally.
+- The scene content must follow the scene description.
+- Do NOT force environment-only or character-only rules.
+- Do NOT include text, letters, symbols, logos, or UI.
+
+
+Character details:
+${characterPrompt}
+
+Atmosphere:
+${atmospherePrompt}
 
 ABSOLUTELY NO TEXT.
 NO LETTERS.
@@ -506,50 +611,51 @@ NO UI.
 NO READABLE CHARACTERS OF ANY KIND.
 `.trim();
 
+
+
+
   const base64 = referenceImage?.split(',')[1];
+const parts: any[] = referenceImage
+  ? [
+      {
+        inlineData: {
+          data: base64,
+          mimeType: referenceImage.startsWith('data:image/jpeg')
+            ? 'image/jpeg'
+            : referenceImage.startsWith('data:image/webp')
+            ? 'image/webp'
+            : 'image/png'
+        }
+      },
+      {
+        text: `
+The reference image is provided ONLY to guide:
+- art style
+- brushwork
+- texture
+- color palette
+- lighting tone
 
-  const parts: any[] = referenceImage
-    ? [
-        {
-          inlineData: {
-            data: base64,
-            mimeType: referenceImage.startsWith('data:image/jpeg')
-              ? 'image/jpeg'
-              : referenceImage.startsWith('data:image/webp')
-              ? 'image/webp'
-              : 'image/png'
-          }
-        },
-        {
-          text: `
-THIS IMAGE IS THE ABSOLUTE VISUAL SOURCE OF TRUTH.
 
-You MUST replicate:
-- the exact art style
-- the rendering technique
-- the color palette
-- the lighting and tone
-- the character’s face, age, proportions, and identity
+REFERENCE IMAGE CONSTRAINT (CRITICAL):
+- Ignore any characters, faces, bodies, animals, silhouettes in the reference image.
+- Do NOT copy the reference subject into the scene unless the scene description explicitly demands it.
+- Use the reference ONLY for style/tone/brushwork, not for content.
 
-Do NOT reinterpret.
-Do NOT stylize.
-Do NOT change the art style.
-Do NOT create a new character.
-
-Any deviation is INVALID.
 
 ${baseTextPrompt}
-          `.trim()
-        }
-      ]
-    : [
-        {
-          text: `
+        `.trim()
+      }
+    ]
+  : [
+      {
+        text: `
 Art style: ${style}.
 ${baseTextPrompt}
-          `.trim()
-        }
-      ];
+        `.trim()
+      }
+    ];
+
 
   const response: GenerateContentResponse = await withRetry(() =>
     ai.models.generateContent({

@@ -7,11 +7,14 @@ const { dialog } = require('electron');
 const STORE_PATH = path.join(app.getPath('userData'), 'export-path.json');
 const jobs = new Map();
 
+app.setName('노깡 STUDIO'); // ✅ 이 줄 (createWindow보다 위)
 
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
+    title: '노깡 STUDIO', // ✅ (선택이지만 추천)
+    icon: path.join(__dirname, 'icon.ico'), // ✅ 이 줄
     webPreferences: {
   preload: path.join(__dirname, 'preload.js'),
   contextIsolation: true,
@@ -21,7 +24,7 @@ function createWindow() {
   });
 
   // Vite dev 서버
-  win.loadURL('http://192.168.35.251:3000');
+ win.loadURL('http://localhost:3000');
 
  }
 

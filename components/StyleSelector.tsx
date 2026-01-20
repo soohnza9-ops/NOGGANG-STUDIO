@@ -40,9 +40,10 @@ const StyleSelector: React.FC<StyleSelectorProps> = ({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2">
+      <div className="border-t border-zinc-800 mb-3"></div>
       <div className="flex items-center justify-between">
-        <label className="block text-base font-black text-zinc-400 ">
+    <label className="block text-base font-black text-zinc-400">
           스타일 및 참조 이미지
         </label>
         {referenceImage && (
@@ -51,6 +52,13 @@ const StyleSelector: React.FC<StyleSelectorProps> = ({
           </span>
         )}
       </div>
+
+{!referenceImage && (
+  <p className="text-xs font-medium text-zinc-500 tracking-tight leading-snug mt-0">
+    * 참조 이미지를 업로드하면 색감, 스타일, 캐릭터 특징을 AI가 그대로 따라갑니다.
+  </p>
+)}
+
 
       <div className="flex flex-col md:flex-row gap-4">
         {/* 스타일 버튼 구역 */}
@@ -119,11 +127,7 @@ const StyleSelector: React.FC<StyleSelectorProps> = ({
         </div>
       </div>
       
-      {!referenceImage && (
-        <p className="text-[10px] text-zinc-600">
-          * 참조 이미지를 업로드하면 색감, 스타일, 캐릭터 특징을 AI가 그대로 따라갑니다.
-        </p>
-      )}
+     
     </div>
   );
 };
