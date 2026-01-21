@@ -66,7 +66,9 @@ const SceneCard = forwardRef<HTMLDivElement, SceneCardProps>(({
 
 
 
-  const breathKey = getBreathKey ? getBreathKey() : null;
+  const resolveBreathKey = () => (getBreathKey ? getBreathKey() : null);
+
+  const breathKey = resolveBreathKey();
   const hasBreathGroup = !!breathKey;
 
   const [editedSubtitle, setEditedSubtitle] = useState(scene.subtitle);
@@ -83,24 +85,51 @@ const [isAudioRegenerating, setIsAudioRegenerating] = useState(false);
   const audioEditorRef = useRef<HTMLDivElement>(null);
   const imageBtnRef = useRef<HTMLButtonElement>(null);
   const audioBtnRef = useRef<HTMLButtonElement>(null);
+  const subtitleEditorRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null); // 수동 업로드용
 
   useEffect(() => { setEditedSubtitle(scene.subtitle); }, [scene.subtitle]);
   useEffect(() => { setEditedVisualPrompt(scene.visualPrompt); }, [scene.visualPrompt]);
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (showImageEditor && imageEditorRef.current && !imageEditorRef.current.contains(target) && imageBtnRef.current && !imageBtnRef.current.contains(target)) {
-        setShowImageEditor(false);
-      }
-      if (showAudioEditor && audioEditorRef.current && !audioEditorRef.current.contains(target) && audioBtnRef.current && !audioBtnRef.current.contains(target)) {
-        setShowAudioEditor(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showImageEditor, showAudioEditor]);
+ 
+useEffect(() => {
+  const handleClickOutside = (event: MouseEvent) => {
+    const target = event.target as Node;
+
+    if (
+      showImageEditor &&
+      imageEditorRef.current &&
+      !imageEditorRef.current.contains(target) &&
+      imageBtnRef.current &&
+      !imageBtnRef.current.contains(target)
+    ) {
+      setShowImageEditor(false);
+    }
+
+    if (
+      showAudioEditor &&
+      audioEditorRef.current &&
+      !audioEditorRef.current.contains(target) &&
+      audioBtnRef.current &&
+      !audioBtnRef.current.contains(target)
+    ) {
+      setShowAudioEditor(false);
+    }
+
+    if (
+      showSubtitleEditor &&
+      subtitleEditorRef.current &&
+      !subtitleEditorRef.current.contains(target)
+    ) {
+      onUpdateSubtitle(scene.id, editedSubtitle);
+      setShowSubtitleEditor(false);
+    }
+  };
+
+  document.addEventListener('mousedown', handleClickOutside);
+  return () => document.removeEventListener('mousedown', handleClickOutside);
+}, [showImageEditor, showAudioEditor, showSubtitleEditor, editedSubtitle]);
+
 
   useEffect(() => {
   if (scene.imageUrl && isImageRegenerating) {
@@ -128,40 +157,46 @@ const handleConfirmRegen = (type: 'image' | 'audio') => {
     return;
   }
 
-  // audio
-if (!showAudioEditor) {
-  setShowAudioEditor(true);
-  setShowImageEditor(false);
-  setShowSubtitleEditor(false);
+  // audio (묶음/단일 모두 여기서 처리)
+  const bk = resolveBreathKey();
+  const isGroup = !!bk;
 
-  if (breathKey && onEnterAudioEditMode) {
-    onEnterAudioEditMode(breathKey);
-  }
+  // 1) 첫 클릭: 무조건 에디터(프롬프트) 열기 + 묶음이면 텍스트도 즉시 세팅
+  if (!showAudioEditor) {
+    const liveBreathKey = resolveBreathKey();
+    const isLiveGroup = !!liveBreathKey;
 
-  return;
-}
+    setShowAudioEditor(true);
+    setShowImageEditor(false);
+    setShowSubtitleEditor(false);
 
+    if (isLiveGroup && onEnterAudioEditMode) {
+      onEnterAudioEditMode(liveBreathKey!);
+    }
 
-  setIsAudioRegenerating(true);
-
-  // ✅ 먼저 "편집 텍스트" 저장
-  if (breathKey && onUpdateBreathGroupSubtitle) {
-    const text = (activeBreathKey === breathKey ? (breathEditText ?? '') : editedSubtitle);
-    onUpdateBreathGroupSubtitle(breathKey, text);
-  } else {
-    onUpdateSubtitle(scene.id, editedSubtitle);
-  }
-
-  // ✅ breathKey 있으면: "이 묶음만" 재생성
-  if (breathKey && onRegenerateBreathGroup) {
-    onRegenerateBreathGroup(breathKey);
     return;
   }
 
 
-  // ✅ breathKey 없으면: 기존처럼 씬 단위 재생성
+
+  // 2) 두번째 클릭(=지금 생성): 실제 재생성
+  setIsAudioRegenerating(true);
+
+  if (isGroup && onUpdateBreathGroupSubtitle) {
+    const text = (breathEditText ?? '').length > 0 ? (breathEditText ?? '') : (scene.subtitle ?? '');
+    onUpdateBreathGroupSubtitle(bk!, text);
+
+    if (onRegenerateBreathGroup) {
+      onRegenerateBreathGroup(bk!);
+      return;
+    }
+  }
+
+  // 단일 오디오
+  onUpdateSubtitle(scene.id, editedSubtitle);
   onRegenerateAudio(scene.id, editedSubtitle);
 };
+
 
 
 
@@ -459,22 +494,32 @@ className={`
         : '오디오 재생성'}
   </button>
 
-  {/* 자막 수정 */}
-  <button
-    onClick={(e) => {
-      e.stopPropagation();
+<button
+  onMouseDown={(e) => {
+    // document mousedown 보다 먼저 실행되어야 함
+    e.stopPropagation();
+    e.preventDefault();
+
+    if (showSubtitleEditor) {
+      // 완료
+      onUpdateSubtitle(scene.id, editedSubtitle);
+      setShowSubtitleEditor(false);
+    } else {
+      // 진입
       setShowAudioEditor(false);
       setShowImageEditor(false);
-      setShowSubtitleEditor(v => !v);
-    }}
-    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black transition-all border shadow-sm ${
-      showSubtitleEditor
-        ? 'bg-yellow-400 text-black border-yellow-500'
-        : 'bg-zinc-800/60 text-zinc-200 border-zinc-700/60 hover:bg-zinc-800 active:scale-95'
-    }`}
-  >
-    자막 수정
-  </button>
+      setShowSubtitleEditor(true);
+    }
+  }}
+  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black transition-all border shadow-sm ${
+    showSubtitleEditor
+      ? 'bg-yellow-400 text-black border-yellow-500'
+      : 'bg-zinc-800/60 text-zinc-200 border-zinc-700/60 hover:bg-zinc-800 active:scale-95'
+  }`}
+>
+  {showSubtitleEditor ? '수정 완료' : '자막 수정'}
+</button>
+
 
 
 </div>
@@ -526,14 +571,14 @@ className={`
 
     <textarea
       value={
-        breathKey && activeBreathKey === breathKey
+        breathKey
           ? (breathEditText ?? '')
           : editedSubtitle
       }
       onChange={(e) => {
         const v = e.target.value;
 
-        if (breathKey && activeBreathKey === breathKey && onBreathEditTextChange) {
+        if (breathKey && onBreathEditTextChange) {
           onBreathEditTextChange(breathKey, v);
           return;
         }
@@ -541,38 +586,34 @@ className={`
         setEditedSubtitle(v);
       }}
       onBlur={() => {
-        if (breathKey && activeBreathKey === breathKey && onUpdateBreathGroupSubtitle) {
+        if (breathKey && onUpdateBreathGroupSubtitle) {
           onUpdateBreathGroupSubtitle(breathKey, breathEditText ?? '');
           return;
         }
+
         onUpdateSubtitle(scene.id, editedSubtitle);
       }}
       className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-3 text-[12px] text-zinc-200 font-bold focus:border-emerald-500/50 outline-none resize-none leading-relaxed"
       rows={3}
       autoFocus
     />
+
   </div>
 )}
 
 {showSubtitleEditor && (
   <div
+    ref={subtitleEditorRef}
     className="mt-1 p-3 bg-zinc-950 rounded-xl border border-zinc-500/30 animate-in slide-in-from-top-1 duration-200"
     onClick={e => e.stopPropagation()}
   >
+
     <div className="flex justify-between items-center mb-2">
       <label className="text-[10px] text-zinc-300 font-black uppercase tracking-widest">
         자막 수정
       </label>
-      <button
-        onClick={() => {
-          onUpdateSubtitle(scene.id, editedSubtitle);
-          setShowSubtitleEditor(false);
-        }}
-        className="text-yellow-400 font-black text-xs hover:text-yellow-300"
-      >
-        완료
-      </button>
     </div>
+
 
     <textarea
       value={editedSubtitle}
