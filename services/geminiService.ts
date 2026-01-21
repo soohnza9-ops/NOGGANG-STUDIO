@@ -85,6 +85,52 @@ export function convertToKoreanSpeech(text: string): string {
 }
 
 export const preprocessForTTS = convertToKoreanSpeech;
+// ----------------------------
+// ✅ 언어 자동 감지 (텍스트 기반)
+// ----------------------------
+type DetectedLang =
+  | 'ko' | 'en' | 'ja' | 'zh'
+  | 'hi' | 'th' | 'ru' | 'ar'
+  | 'vi' | 'id' | 'tr' | 'pl';
+
+export function detectLanguage(text: string): DetectedLang {
+  const t = text.trim();
+
+  if (/[가-힣]/.test(t)) return 'ko';               // 한국어
+  if (/[\u3040-\u30ff]/.test(t)) return 'ja';       // 일본어
+  if (/[\u4e00-\u9fff]/.test(t)) return 'zh';       // 중국어
+
+  if (/[\u0900-\u097F]/.test(t)) return 'hi';       // 힌디어
+  if (/[\u0E00-\u0E7F]/.test(t)) return 'th';       // 태국어
+  if (/[\u0400-\u04FF]/.test(t)) return 'ru';       // 러시아어
+  if (/[\u0600-\u06FF]/.test(t)) return 'ar';       // 아랍어
+  if (/[\u0102\u0103\u0110\u0111\u1EA0-\u1EF9]/.test(t)) return 'vi'; // 베트남어
+  if (/[ąćęłńóśżź]/i.test(t)) return 'pl';           // 폴란드어
+  if (/[İıŞşĞğÇçÖöÜü]/.test(t)) return 'tr';        // 터키어
+
+  return 'en'; // 라틴 기본
+}
+
+export function mapLanguageCode(lang: DetectedLang): string {
+  switch (lang) {
+    case 'ko': return 'ko-KR';
+    case 'ja': return 'ja-JP';
+    case 'zh': return 'cmn-CN';
+    case 'en': return 'en-US';
+
+    case 'hi': return 'hi-IN';
+    case 'th': return 'th-TH';
+    case 'ru': return 'ru-RU';
+    case 'ar': return 'ar-XA';
+    case 'vi': return 'vi-VN';
+    case 'pl': return 'pl-PL';
+    case 'tr': return 'tr-TR';
+
+    default: return 'en-US';
+  }
+}
+
+
 /**
  * ✅ 클릭(틱) 제거용: AudioBuffer 앞/뒤 초단기 페이드 인/아웃
  */
@@ -259,56 +305,288 @@ ${combinedPrompt}
       const world = data.world || { characters: [], locations: [], objects: [] };
 
 
-      // 2) 코드로 장면 분할
-      const sentences = script.match(/(\[[^\]]+\]|[^.!?]+[.!?])/g) || [];
+    // 2) 코드로 장면 분할 (자막=글자수 / TTS=호흡 단위)
+function splitByBreath(text: string): string[] {
+  const cleaned = text
+    .replace(/\n+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-      const limits =
-        aspectRatio === '9:16'
-          ? subtitleSize === 'L'
-            ? { min: 15, max: 20 }
-            : subtitleSize === 'M'
-              ? { min: 15, max: 25 }
-              : { min: 20, max: 35 }
-          : subtitleSize === 'L'
-            ? { min: 22, max: 40 }
-            : subtitleSize === 'M'
-              ? { min: 27, max: 55 }
-              : { min: 30, max: 70 };
+  if (!cleaned) return [];
 
-      const scenes: Scene[] = [];
-      let buf = "";
+  return cleaned
+    .split(/(?<=[\.\!\?。！？,，、])/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
 
-      for (const s of sentences) {
-        if (!buf) {
-          buf = s;
-          continue;
-        }
+// ✅ 의미 단위 분할 보조 규칙 (다국어 공용)
+const KOREAN_PARTICLE_BLOCK = /(은|는|이|가|을|를|에|의|로|와|과)$/;
+const KOREAN_ENDING_BLOCK = /(다|요|습니다)$/;
+const AUX_VERB_BLOCK = /(하고 있다|되고 있다|할 수 있다)$/;
 
-        if ((buf + " " + s).length <= limits.max) {
-          buf += " " + s;
-        } else {
-          scenes.push({
-            id: "",
-            subtitle: buf,
-            visualPrompt: "",
-            status: "pending",
-            isHeader: isHeaderSubtitle(buf),
-            syncOffset: 0
-          });
-          buf = s;
-        }
+const CLAUSE_KEYWORDS = [
+  // 한국어
+  "그리고", "그러나", "하지만", "또한", "즉", "따라서", "때문에", "이며", "인데",
+  // 영어
+  "and", "but", "however", "therefore", "because",
+  // 일본어
+  "そして", "しかし", "だから",
+  // 중국어
+  "但是", "因此", "而且",
+];
+
+// 분할 금지 판단
+function isBadSplit(prev: string, next: string): boolean {
+  if (KOREAN_PARTICLE_BLOCK.test(prev)) return true;
+  if (KOREAN_ENDING_BLOCK.test(prev)) return true;
+  if (AUX_VERB_BLOCK.test(prev + " " + next)) return true;
+  return false;
+}
+
+function getCharRange(
+  aspectRatio: AspectRatio,
+  subtitleSize: SubtitleSize
+): { min: number; max: number } {
+  const isVertical = aspectRatio === "9:16";
+
+  if (isVertical) {
+    return subtitleSize === "L"
+      ? { min: 15, max: 20 }
+      : subtitleSize === "M"
+        ? { min: 15, max: 25 }
+        : { min: 27, max: 55 };
+  } else {
+    return subtitleSize === "L"
+      ? { min: 22, max: 40 }
+      : subtitleSize === "M"
+        ? { min: 20, max: 35 }
+        : { min: 30, max: 70 };
+  }
+}
+
+// 의미 단위 기준으로 안전하게 분할
+function splitByMeaning(text: string): string[] {
+  const words = text.split(" ");
+  const result: string[] = [];
+  let buf = "";
+
+  const { max } = getCharRange(aspectRatio, subtitleSize);
+
+  function isProtectedCompound(a: string, b: string) {
+    return (
+      /(할|하고|되고|있고|수|수도|수는)$/.test(a) &&
+      /^(있다|있습니다|없다|없습니다)/.test(b)
+    );
+  }
+
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+
+    if (!buf) {
+      buf = w;
+      continue;
+    }
+
+    const prev = buf.trim();
+    const next = w.trim();
+
+    const isClause =
+      CLAUSE_KEYWORDS.includes(next) ||
+      /[,.!?。！？]$/.test(prev);
+
+    if (
+      isClause &&
+      !isBadSplit(prev, next) &&
+      !(
+        isProtectedCompound(prev, next) &&
+        (buf + " " + w).length <= max
+      )
+    ) {
+      result.push(buf.trim());
+      buf = w;
+    } else {
+      buf += " " + w;
+    }
+  }
+
+  if (buf.trim()) result.push(buf.trim());
+  return result;
+}
+
+const { min, max } = getCharRange(aspectRatio, subtitleSize);
+const tailMin = Math.min(Math.max(8, Math.floor(min * 0.6)), Math.floor(max / 2));
+
+function takeChunk(text: string, maxLen: number): { chunk: string; rest: string } {
+  let t = text.replace(/\s+/g, " ").trim();
+  if (!t) return { chunk: "", rest: "" };
+  if (t.length <= maxLen) return { chunk: t, rest: "" };
+
+  const breakChars = [" ", ",", "，", "、", ".", "!", "?", "。", "！", "？", ":", ";", "…"];
+  const head = t.slice(0, maxLen);
+  let breakAt = -1;
+
+  for (let i = head.length - 1; i >= 0; i--) {
+    if (breakChars.includes(head[i])) {
+      breakAt = i;
+      break;
+    }
+  }
+
+  if (breakAt < 0) {
+    return {
+      chunk: t.slice(0, maxLen).trim(),
+      rest: t.slice(maxLen).trim()
+    };
+  }
+
+  let chunk = t.slice(0, breakAt + 1).trim();
+  let rest = t.slice(breakAt + 1).trim();
+
+  if (rest && rest.length < tailMin) {
+    for (let j = breakAt - 1; j >= 0; j--) {
+      if (!breakChars.includes(head[j])) continue;
+      const c2 = t.slice(0, j + 1).trim();
+      const r2 = t.slice(j + 1).trim();
+      if (r2.length >= tailMin) {
+        chunk = c2;
+        rest = r2;
+        break;
       }
+    }
+  }
 
-      if (buf) {
-        scenes.push({
-          id: "",
-          subtitle: buf,
-          visualPrompt: "",
-          status: "pending",
-          isHeader: isHeaderSubtitle(buf),
-          syncOffset: 0
-        });
+  return { chunk, rest };
+}
+
+function makeSceneSmart(text: string, breathId: number, startSec: number, endSec: number): Scene {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  return {
+    id: "",
+    subtitle: trimmed,
+    visualPrompt: "",
+    status: "pending",
+    isHeader: isHeaderSubtitle(trimmed),
+    syncOffset: 0,
+    breathId,
+    audioStart: startSec,
+    audioEnd: endSec
+  } as any;
+}
+
+
+const scenes: Scene[] = [];
+
+const pushScene = (
+  text: string,
+  breathId: number,
+  startSec: number,
+  endSec: number
+) => {
+  const raw = text.replace(/\s+/g, " ").trim();
+  if (!raw) return;
+
+  if (raw.length > max) {
+    let temp = raw;
+    let localStart = startSec;
+    const totalLen = raw.length;
+    while (temp.length > max) {
+      const { chunk, rest } = takeChunk(temp, max);
+      const ratio = chunk.length / totalLen;
+      const localEnd = localStart + (endSec - startSec) * ratio;
+      scenes.push(makeSceneSmart(chunk, breathId, localStart, localEnd));
+      temp = rest;
+      localStart = localEnd;
+    }
+    if (temp) scenes.push(makeSceneSmart(temp, breathId, localStart, endSec));
+    return;
+  }
+
+  scenes.push(makeSceneSmart(raw, breathId, startSec, endSec));
+};
+
+
+
+const breaths = splitByBreath(script);
+
+let globalCursor = 0;
+
+for (let breathId = 0; breathId < breaths.length; breathId++) {
+  const breath = breaths[breathId];
+  const breathLen = breath.length;
+  const startSec = globalCursor;
+  const endSec = startSec + breathLen;
+
+  const units = splitByMeaning(breath);
+  let carry = "";
+
+  for (const unit of units) {
+    const t = unit.replace(/\s+/g, " ").trim();
+    if (!t) continue;
+
+    if (isHeaderSubtitle(t)) {
+      if (carry.trim()) {
+        let temp = carry.trim();
+        while (temp.length > max) {
+          const { chunk, rest } = takeChunk(temp, max);
+          if (!chunk) break;
+          pushScene(chunk, breathId, startSec, endSec);
+          temp = rest;
+        }
+        if (temp) pushScene(temp, breathId, startSec, endSec);
+        carry = "";
       }
+      pushScene(t, breathId, startSec, endSec);
+      continue;
+    }
+
+    if (!carry) {
+      carry = t;
+      continue;
+    }
+
+    const merged = `${carry} ${t}`.trim();
+
+    if (carry.length < min) {
+      if (merged.length <= max) {
+        carry = merged;
+        continue;
+      }
+      pushScene(carry, breathId, startSec, endSec);
+      carry = t;
+      continue;
+    }
+
+    if (merged.length <= max) {
+      carry = merged;
+    } else {
+      pushScene(carry, breathId, startSec, endSec);
+      carry = t;
+    }
+
+    while (carry.length > max) {
+      const { chunk, rest } = takeChunk(carry, max);
+      if (!chunk) break;
+      pushScene(chunk, breathId, startSec, endSec);
+      carry = rest;
+    }
+  }
+
+  if (carry.trim()) {
+    let temp = carry.trim();
+    while (temp.length > max) {
+      const { chunk, rest } = takeChunk(temp, max);
+      if (!chunk) break;
+      pushScene(chunk, breathId, startSec, endSec);
+      temp = rest;
+    }
+    if (temp) pushScene(temp, breathId, startSec, endSec);
+  }
+
+  globalCursor = endSec;
+}
+
+
 
 const generateVisualPromptForScene = async (
   sceneSubtitle: string,
@@ -447,37 +725,56 @@ export const generateSingleAudio = async (
   pitch: number,
   ctx: AudioContext
 ): Promise<AudioBuffer> => {
-  const resolvedVoice =
-    (voiceModelName && voiceModelName.includes('ko-KR-'))
-      ? voiceModelName
-      : (VOICE_MODEL_MAP[voiceModelName] || voiceModelName);
+const rawText = scene.subtitle;
+const lang = detectLanguage(rawText);
+const languageCode = mapLanguageCode(lang);
+const isKorean = lang === 'ko';
+const baseVoice =
+  voiceModelName && voiceModelName.includes('Chirp3-HD-')
+    ? voiceModelName.split('-Chirp3-HD-')[1]
+    : (VOICE_MODEL_MAP[voiceModelName]
+        ? VOICE_MODEL_MAP[voiceModelName].split('-Chirp3-HD-')[1]
+        : voiceModelName);
 
-  const isChirp3HD = resolvedVoice.includes('Chirp3-HD');
+const resolvedVoice = `${languageCode}-Chirp3-HD-${baseVoice}`;
 
-  const text = convertToKoreanSpeech(scene.subtitle);
-  const safeRate = clamp(speed, 0.25, 4.0);
 
-  const audioConfig: any = {
-    audioEncoding: 'MP3',
-    speakingRate: safeRate
-  };
+const isChirp3HD = resolvedVoice?.includes('Chirp3-HD');
 
-  if (!isChirp3HD) {
-    audioConfig.pitch = clamp(pitch, -20, 20);
+
+const text =
+  isKorean
+    ? convertToKoreanSpeech(rawText)
+    : sanitizeForTTS(rawText);
+
+const safeRate = clamp(speed, 0.25, 4.0);
+
+const audioConfig: any = {
+  audioEncoding: 'MP3',
+  speakingRate: safeRate
+};
+
+if (!isChirp3HD) {
+  audioConfig.pitch = clamp(pitch, -20, 20);
+}
+
+
+const response = await fetch(
+  `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`,
+  {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+  input: { text },
+voice: {
+  languageCode,
+  name: resolvedVoice
+},
+  audioConfig
+})
   }
+);
 
-  const response = await fetch(
-    `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        input: { text },
-        voice: { languageCode: 'ko-KR', name: resolvedVoice },
-        audioConfig
-      })
-    }
-  );
 
   if (!response.ok) {
     let msg = 'Unknown';
@@ -521,40 +818,112 @@ export const generateAudioBatch = async (
 ) => {
   const CONCURRENCY = 20;
 
+  const nonHeader = scenes.filter(s => !s.isHeader);
+  const breathMap = new Map<number, Scene[]>();
+
+  for (const s of nonHeader) {
+    const bid = (s as any).breathId ?? -1;
+    if (!breathMap.has(bid)) breathMap.set(bid, []);
+    breathMap.get(bid)!.push(s);
+  }
+
+  const breathGroups = Array.from(breathMap.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([, group]) => group);
+
   let index = 0;
 
   const worker = async () => {
     while (true) {
-      const i = index++;
-      if (i >= scenes.length) return;
+      const gi = index++;
+      if (gi >= breathGroups.length) return;
 
-      const scene = scenes[i];
+      const group = breathGroups[gi];
+      if (!group || group.length === 0) continue;
+
+      const first = group[0];
+
       try {
-      if (scene.isHeader) continue;
+        const fullText = group.map(s => s.subtitle).join(" ").replace(/\s+/g, " ").trim();
 
-const buffer = await generateSingleAudio(
+        const fakeScene = { ...(first as any), subtitle: fullText } as Scene;
+
+
+        const buffer = await generateSingleAudio(
           apiKey,
-          scene,
+          fakeScene,
           voiceName,
           speed,
           pitch,
           ctx
         );
 
-        onProgress(scene.id, buffer);
+// ✅ 아래 "for (const s of group) { ... }" 이 블록을 통째로 삭제하고
+// ✅ 아래 블록으로 그대로 교체
+
+const totalChars = Math.max(
+  1,
+  group.reduce((sum, s) => sum + (String(s.subtitle || "").length || 0), 0)
+);
+
+let cursorSec = 0;
+
+for (let idx = 0; idx < group.length; idx++) {
+  const s = group[idx];
+  const textLen = String(s.subtitle || "").length || 0;
+
+  const segDur =
+    idx === group.length - 1
+      ? Math.max(0, buffer.duration - cursorSec)
+      : Math.max(0, (buffer.duration * textLen) / totalChars);
+
+  const start = Math.max(0, cursorSec);
+  const end = Math.max(start, Math.min(buffer.duration, start + segDur));
+
+  const startSample = Math.floor(start * buffer.sampleRate);
+  const endSample = Math.floor(end * buffer.sampleRate);
+  const frameCount = Math.max(1, endSample - startSample);
+
+  const slice = ctx.createBuffer(
+    buffer.numberOfChannels,
+    frameCount,
+    buffer.sampleRate
+  );
+
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    const src = buffer.getChannelData(ch);
+    const dst = slice.getChannelData(ch);
+
+    for (let i = 0; i < frameCount; i++) {
+      const si = startSample + i;
+      dst[i] = si >= 0 && si < src.length ? src[si] : 0;
+    }
+  }
+
+  onProgress(s.id, slice);
+
+  cursorSec = end;
+}
+
+
+
       } catch (e: any) {
-        onError(scene.id, e?.message || String(e));
+        const msg = e?.message || String(e);
+        for (const s of group) {
+          onError(s.id, msg);
+        }
       }
     }
   };
 
   const workers = Array.from(
-    { length: Math.min(CONCURRENCY, scenes.length) },
+    { length: Math.min(CONCURRENCY, breathGroups.length) },
     () => worker()
   );
 
   await Promise.all(workers);
 };
+
 export const generateSceneImage = async (
   apiKey: string,
   prompt: string,

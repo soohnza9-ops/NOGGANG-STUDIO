@@ -20,6 +20,9 @@ export interface Scene {
   isHeader: boolean;
   isUserAsset?: boolean;
   userAssetType?: 'image' | 'video';
+  breathId?: number;
+  audioStart?: number;
+  audioEnd?: number;
 }
 
 export interface YouTubeMetadata {
@@ -83,4 +86,15 @@ export interface SceneTimelineEntry {
   scene: Scene;
   duration: number;
   audioOffsetInFullBuffer?: number;
+}
+
+export enum ToolType {
+  DASHBOARD = "DASHBOARD",
+  IMAGE_GEN = "IMAGE_GEN",
+  VOICE_SUB = "VOICE_SUB",
+  LYRICS_SYNC = "LYRICS_SYNC",
+  SCRIPT_WRITER = "SCRIPT_WRITER",
+  THUMBNAIL_GEN = "THUMBNAIL_GEN",
+  VIDEO_AUTO = "VIDEO_AUTO",
+  
 }

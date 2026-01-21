@@ -323,6 +323,10 @@ const App: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isImageBatchRunningState, setIsImageBatchRunningState] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+const [activeBreathKey, setActiveBreathKey] = useState<string | null>(null);
+const [breathEditText, setBreathEditText] = useState<string>("");
+const [isBreathEditing, setIsBreathEditing] = useState<boolean>(false);
+
 const [isExporting, setIsExporting] = useState(false);
 const [currentTime, setCurrentTime] = useState(0);
 const [isZipping, setIsZipping] = useState(false);
@@ -330,6 +334,7 @@ const [zipProgress, setZipProgress] = useState(0);
 const [exportProgress, setExportProgress] = useState(0);
 const [isConfirmOpen, setIsConfirmOpen] = useState(false);
 const [isVideoLoading, setIsVideoLoading] = useState(false);
+const [statusLog, setStatusLog] = useState<string>("");
 const audioCtxRef = useRef<AudioContext | null>(null);
 const audioSourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
 const requestRef = useRef<number>(0);
@@ -868,6 +873,21 @@ useEffect(() => {
   const updateSubtitle = (id: string, sub: string) => {
     setState(p => ({ ...p, scenes: p.scenes.map(sc => sc.id === id ? { ...sc, subtitle: sub } : sc) }));
   };
+  const updateBreathGroupSubtitle = (breathKey: string, text: string) => {
+  const breathIdNum = Number(breathKey);
+  if (!Number.isFinite(breathIdNum)) return;
+
+  setState(p => ({
+    ...p,
+    scenes: p.scenes.map(sc => {
+      if (sc.isHeader) return sc;
+      const bid = Number((sc as any).breathId ?? -9999);
+      if (bid !== breathIdNum) return sc;
+      return { ...sc, subtitle: text };
+    })
+  }));
+};
+
   const updateVisualPrompt = (id: string, vp: string) => {
     setState(p => ({ ...p, scenes: p.scenes.map(sc => sc.id === id ? { ...sc, visualPrompt: vp } : sc) }));
   };
@@ -950,6 +970,63 @@ const imgUrl = await generateSceneImage(
       audioCtx.close();
     }
   };
+const processBreathGroupAudio = async (breathKey: string) => {
+  if (!API_KEY) return;
+
+  const breathIdNum = Number(breathKey);
+  if (!Number.isFinite(breathIdNum)) return;
+const targetScenes = stateRef.current.scenes.filter(
+  s => !s.isHeader && String((s as any).breathId ?? "") === breathKey
+);
+
+  if (targetScenes.length === 0) return;
+
+  setState(p => ({
+    ...p,
+    scenes: p.scenes.map(sc =>
+      targetScenes.some(t => t.id === sc.id)
+        ? { ...sc, status: 'generating', errorMessage: undefined }
+        : sc
+    )
+  }));
+
+  const audioCtx = new AudioContext({ sampleRate: AUDIO_SR });
+
+  try {
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+if (targetScenes.length === 0) return;
+    await generateAudioBatch(
+      API_KEY!,
+      targetScenes,
+      stateRef.current.selectedVoice,
+      stateRef.current.voiceSpeed,
+      stateRef.current.voicePitch,
+      audioCtx,
+      (id, buffer) => {
+        postProcessSceneAudioInPlace(buffer);
+
+        setState(p => ({
+          ...p,
+          scenes: p.scenes.map(sc =>
+            sc.id === id
+              ? { ...sc, audioBuffer: buffer, status: sc.imageUrl ? 'completed' : 'generating', errorMessage: undefined }
+              : sc
+          )
+        }));
+      },
+      (id, error) => {
+        setState(p => ({
+          ...p,
+          scenes: p.scenes.map(sc =>
+            sc.id === id ? { ...sc, status: 'error', errorMessage: error } : sc
+          )
+        }));
+      }
+    );
+  } finally {
+    try { await audioCtx.close(); } catch {}
+  }
+};
 
 const processFullBatch = async (type: 'image' | 'audio' | 'all' = 'all') => {
   
@@ -1468,17 +1545,18 @@ const handleSeek = async (time: number) => {
       {viewMode === 'setup' ? (
         <>
           <Header />
+          <div className="h-10 flex-shrink-0" />
           <main className="w-full mx-auto px-24 py-6 flex flex-col gap-4 overflow-y-auto">
-            <section className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-6">
-              <VideoSettingsPanel
-                settings={state.videoSettings}
-                onChange={(u) => setState(p => ({ ...p, videoSettings: { ...p.videoSettings, ...u } }))}
-                disabled={state.isAnalyzing}
-              />
 
-              {/* 성우 및 BGM 박스 - 성우는 더 길게(8), BGM은 얇게(2) */}
-            {/* 성우 + BGM (전체폭) */}
-<div className="grid grid-cols-1 gap-4">
+
+         {/* 🎛️ 영상 / 음성 설정 */}
+<section className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-6">
+  <VideoSettingsPanel
+    settings={state.videoSettings}
+    onChange={(u) => setState(p => ({ ...p, videoSettings: { ...p.videoSettings, ...u } }))}
+    disabled={state.isAnalyzing}
+  />
+
   <VoiceSelector
     selectedVoice={state.selectedVoice}
     onSelect={v => setState(p => ({ ...p, selectedVoice: v }))}
@@ -1492,35 +1570,37 @@ const handleSeek = async (time: number) => {
     onBgmVolumeChange={v => setState(p => ({ ...p, bgmVolume: v }))}
     disabled={state.isAnalyzing}
   />
-</div>
+</section>
 
+{/* 🎨 스타일 / 참조 이미지 */}
+<section className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-6">
+  <StyleSelector
+    selectedStyle={state.selectedStyle}
+    onSelect={s => setState(p => ({ ...p, selectedStyle: s }))}
+    referenceImage={state.referenceImage}
+    onReferenceImageChange={img => setState(p => ({ ...p, referenceImage: img }))}
+    disabled={state.isAnalyzing}
+  />
 
-              <StyleSelector
-                selectedStyle={state.selectedStyle}
-                onSelect={s => setState(p => ({ ...p, selectedStyle: s }))}
-                referenceImage={state.referenceImage}
-                onReferenceImageChange={img => setState(p => ({ ...p, referenceImage: img }))}
-                disabled={state.isAnalyzing}
-              />
+  <AdvancedSettings
+    characterPrompt={state.characterPrompt}
+    onCharacterPromptChange={v => setState(p => ({ ...p, characterPrompt: v }))}
+    atmospherePrompt={state.atmospherePrompt}
+    onAtmospherePromptChange={v => setState(p => ({ ...p, atmospherePrompt: v }))}
+    disabled={state.isAnalyzing}
+  />
+</section>
 
-               <AdvancedSettings
-                characterPrompt={state.characterPrompt}
-                onCharacterPromptChange={v => setState(p => ({ ...p, characterPrompt: v }))}
-                atmospherePrompt={state.atmospherePrompt}
-                onAtmospherePromptChange={v => setState(p => ({ ...p, atmospherePrompt: v }))}
-                disabled={state.isAnalyzing}
-              />
-
-              <AssetLibrary
-                assets={state.userAssets}
-                onAssetsChange={a => setState(p => ({ ...p, userAssets: a }))}
-                skipInitialImageGen={state.skipInitialImageGen}
-                onSkipInitialImageGenChange={v => setState(p => ({ ...p, skipInitialImageGen: v }))}
-                disabled={state.isAnalyzing}
-              />
-
-            
-            </section>
+{/* 📦 사용자 에셋 */}
+<section className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 space-y-6">
+  <AssetLibrary
+    assets={state.userAssets}
+    onAssetsChange={a => setState(p => ({ ...p, userAssets: a }))}
+    skipInitialImageGen={state.skipInitialImageGen}
+    onSkipInitialImageGenChange={v => setState(p => ({ ...p, skipInitialImageGen: v }))}
+    disabled={state.isAnalyzing}
+  />
+</section>
 
            <section className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 pointer-events-auto">
 
@@ -1647,13 +1727,31 @@ const handleSeek = async (time: number) => {
         </>
       ) : (
         <div className="min-h-screen bg-black flex flex-col overflow-hidden">
-          <header className="h-20 border-b border-zinc-800 bg-zinc-950 flex items-center justify-between px-6 flex-shrink-0">
+              <header className="h-20 border-b border-zinc-800 bg-zinc-950 flex items-center justify-between px-6 flex-shrink-0">
             <div className="flex items-center gap-4 overflow-hidden">
-              <button onClick={() => setViewMode('setup')} className="p-2 hover:bg-zinc-800 rounded-lg flex-shrink-0"><ChevronLeft /></button>
-              <h2 className="text-sm font-black text-zinc-400 truncate max-w-[200px] flex-shrink-0">{state.metadata?.title}</h2>
+              <button
+                onClick={() => window.location.href = "/"}
+                className="flex items-center gap-2 hover:opacity-80"
+              >
+                <img src="/logo.png" className="w-7 h-7" />
+                <span className="font-black text-sm">노깡 STUDIO</span>
+              </button>
+
+              <button
+                onClick={() => setViewMode('setup')}
+                className="p-2 hover:bg-zinc-800 rounded-lg flex-shrink-0"
+              >
+                <ChevronLeft />
+              </button>
+
+              <h2 className="text-sm font-black text-zinc-400 truncate max-w-[200px] flex-shrink-0">
+                {state.metadata?.title}
+              </h2>
+
               <div className="h-10 border-l border-zinc-800 ml-2 pl-4 flex items-center flex-shrink-0">
                 <BgmSelector
                   variant="compact"
+
                   selectedBgm={state.bgmUrl}
                   onSelect={u => setState(p => ({ ...p, bgmUrl: u }))}
                   volume={state.bgmVolume}
@@ -1815,18 +1913,21 @@ const handleSeek = async (time: number) => {
       : base;
 
   return (
-    <span
-      key={idx}
-      className="block text-white"
-      style={{
-        fontSize: `${fontSize}px`,
-        lineHeight: 1.45,
-        whiteSpace: 'nowrap',
-        textShadow: '0 2px 4px rgba(0,0,0,0.5)'
-      }}
-    >
-      {line}
-    </span>
+<span
+  key={idx}
+  className="block text-white"
+  style={{
+    fontSize: `${fontSize}px`,
+    lineHeight: 1.45,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    overflowWrap: 'anywhere',
+    textShadow: '0 2px 4px rgba(0,0,0,0.5)'
+  }}
+>
+  {line}
+</span>
+
   );
 })}
 
@@ -1878,49 +1979,292 @@ const handleSeek = async (time: number) => {
 
             </div>
 
-          <div
-  className={`lg:w-1/2 overflow-y-auto flex flex-col gap-2 h-full pr-1 transition-all ${
+<div
+  className={`lg:w-1/2 overflow-y-auto overflow-x-hidden flex flex-col gap-2 h-full pr-1 transition-all ${
     isExporting ? 'pointer-events-none relative z-0' : 'relative z-10'
   }`}
 >
-  {state.scenes.map((s, i) => (
-    <SceneCard
-      key={s.id}
-      ref={el => (sceneRefs.current[s.id] = el)}
-      scene={s}
-      index={i}
-      metadata={state.metadata}
-      calculatedDuration={sceneTimeline[i]?.duration || 0}
-      onRegenerateImage={(id, p) => {
-        updateVisualPrompt(id, p || s.visualPrompt);
-        processSingleAsset(id, 'image');
-      }}
-      onUpdateSubtitle={updateSubtitle}
-      onRegenerateAudio={(id, sub) => {
-        updateSubtitle(id, sub || s.subtitle);
-        processSingleAsset(id, 'audio');
-      }}
-      onUpdateVisualPrompt={updateVisualPrompt}
-      onUpdateSyncOffset={(id, offset) =>
-        setState(p => ({
-          ...p,
-          scenes: p.scenes.map(sc =>
-            sc.id === id
-              ? { ...sc, syncOffset: (sc.syncOffset || 0) + offset }
-              : sc
-          )
-        }))
-      }
-      onDeleteScene={(id) =>
-        setState(p => ({ ...p, scenes: p.scenes.filter(sc => sc.id !== id) }))
-      }
-      onClick={() => handleSeek(sceneTimeline[i].start)}
-      isActive={currentScene?.id === s.id}
-      onRetry={(id) => processSingleAsset(id, 'image')}
-      onImageUpload={handleManualImageUpload}
-      skipInitialImageGen={state.skipInitialImageGen}
-    />
-  ))}
+
+
+
+{(() => {
+  // ✅ breathId 기준 그룹 만들기 (header는 별도)
+  const breathGroups = new Map<string, Scene[]>();
+  const headerGroups = new Map<string, Scene[]>();
+
+  state.scenes.forEach(sc => {
+    if (sc.isHeader) {
+      headerGroups.set(`h-${sc.id}`, [sc]);
+      return;
+    }
+    const key = String((sc as any).breathId ?? "");
+    if (!breathGroups.has(key)) breathGroups.set(key, []);
+    breathGroups.get(key)!.push(sc);
+  });
+
+  const renderedBreath = new Set<string>();
+
+  // ✅ 화면에는 "원래 씬 순서"대로 렌더
+  return state.scenes.map((s) => {
+    // header
+    if (s.isHeader) {
+      const i = state.scenes.findIndex(x => x.id === s.id);
+      return (
+        <SceneCard
+          key={s.id}
+          ref={el => (sceneRefs.current[s.id] = el)}
+          scene={s}
+          index={i}
+          metadata={state.metadata}
+          getBreathKey={() => null}
+          onRegenerateBreathGroup={(key) => {
+            setActiveBreathKey(key);
+            processBreathGroupAudio(key);
+          }}
+          onEnterAudioEditMode={(key) => {
+            setActiveBreathKey(key);
+            const groupText = state.scenes
+              .filter(x => String((x as any).breathId) === key)
+              .map(x => x.subtitle)
+              .join("\n");
+            setBreathEditText(groupText);
+            setIsBreathEditing(true);
+          }}
+          onExitAudioEditMode={() => {
+            setActiveBreathKey(null);
+            setIsBreathEditing(false);
+            setBreathEditText("");
+          }}
+          onRegenerateImage={(id, p) => {
+            updateVisualPrompt(id, p || s.visualPrompt);
+            processSingleAsset(id, "image");
+          }}
+          onUpdateSubtitle={updateSubtitle}
+          onRegenerateAudio={(id, sub) => {
+            updateSubtitle(id, sub || s.subtitle);
+            processSingleAsset(id, "audio");
+          }}
+          onUpdateVisualPrompt={updateVisualPrompt}
+          onClick={() => {
+            setIsBreathEditing(false);
+            setActiveBreathKey(null);
+            setBreathEditText("");
+            handleSeek(sceneTimeline[i].start);
+          }}
+          // ✅ 기본 상태에서만 개별 노란테두리
+          isActive={!isBreathEditing && currentScene?.id === s.id}
+          onRetry={(id) => processSingleAsset(id, "image")}
+          onImageUpload={handleManualImageUpload}
+          skipInitialImageGen={state.skipInitialImageGen}
+
+          activeBreathKey={activeBreathKey}
+          breathEditText={breathEditText}
+          onBreathEditTextChange={(key, text) => setBreathEditText(text)}
+          onUpdateBreathGroupSubtitle={updateBreathGroupSubtitle}
+        />
+      );
+    }
+
+    const breathKey = String((s as any).breathId ?? "");
+    const isActiveBreath = isBreathEditing && activeBreathKey && breathKey === activeBreathKey;
+
+    // ✅ 편집 모드가 아니면: 묶음 wrapper 없이 "씬 카드 1개"만
+    if (!isBreathEditing) {
+      const i = state.scenes.findIndex(x => x.id === s.id);
+      return (
+        <SceneCard
+          key={s.id}
+          ref={el => (sceneRefs.current[s.id] = el)}
+          scene={s}
+          index={i}
+          metadata={state.metadata}
+          getBreathKey={() => (!s.isHeader ? String((s as any).breathId ?? "") : null)}
+          onRegenerateBreathGroup={(key) => {
+            setActiveBreathKey(key);
+            processBreathGroupAudio(key);
+          }}
+          onEnterAudioEditMode={(key) => {
+            setActiveBreathKey(key);
+            const groupText = state.scenes
+              .filter(x => String((x as any).breathId) === key)
+              .map(x => x.subtitle)
+              .join("\n");
+            setBreathEditText(groupText);
+            setIsBreathEditing(true);
+          }}
+          onExitAudioEditMode={() => {
+            setActiveBreathKey(null);
+            setIsBreathEditing(false);
+            setBreathEditText("");
+          }}
+          onRegenerateImage={(id, p) => {
+            updateVisualPrompt(id, p || s.visualPrompt);
+            processSingleAsset(id, "image");
+          }}
+          onUpdateSubtitle={updateSubtitle}
+          onRegenerateAudio={(id, sub) => {
+            updateSubtitle(id, sub || s.subtitle);
+            processSingleAsset(id, "audio");
+          }}
+          onUpdateVisualPrompt={updateVisualPrompt}
+          onClick={() => {
+            setIsBreathEditing(false);
+            setActiveBreathKey(null);
+            setBreathEditText("");
+            handleSeek(sceneTimeline[i].start);
+          }}
+          isActive={currentScene?.id === s.id}
+          onRetry={(id) => processSingleAsset(id, "image")}
+          onImageUpload={handleManualImageUpload}
+          skipInitialImageGen={state.skipInitialImageGen}
+
+          activeBreathKey={activeBreathKey}
+          breathEditText={breathEditText}
+          onBreathEditTextChange={(key, text) => setBreathEditText(text)}
+          onUpdateBreathGroupSubtitle={updateBreathGroupSubtitle}
+        />
+      );
+    }
+
+    // ✅ 편집 모드일 때:
+    // - activeBreathKey 묶음만 "큰 네모 wrapper"로 감싸서 1번만 렌더
+    // - 나머지는 평소처럼 개별 씬 카드
+    if (!isActiveBreath) {
+      const i = state.scenes.findIndex(x => x.id === s.id);
+      return (
+        <SceneCard
+          key={s.id}
+          ref={el => (sceneRefs.current[s.id] = el)}
+          scene={s}
+          index={i}
+          metadata={state.metadata}
+          getBreathKey={() => (!s.isHeader ? String((s as any).breathId ?? "") : null)}
+          onRegenerateBreathGroup={(key) => {
+            setActiveBreathKey(key);
+            processBreathGroupAudio(key);
+          }}
+          onEnterAudioEditMode={(key) => {
+            setActiveBreathKey(key);
+            const groupText = state.scenes
+              .filter(x => String((x as any).breathId) === key)
+              .map(x => x.subtitle)
+              .join("\n");
+            setBreathEditText(groupText);
+            setIsBreathEditing(true);
+          }}
+          onExitAudioEditMode={() => {
+            setActiveBreathKey(null);
+            setIsBreathEditing(false);
+            setBreathEditText("");
+          }}
+          onRegenerateImage={(id, p) => {
+            updateVisualPrompt(id, p || s.visualPrompt);
+            processSingleAsset(id, "image");
+          }}
+          onUpdateSubtitle={updateSubtitle}
+          onRegenerateAudio={(id, sub) => {
+            updateSubtitle(id, sub || s.subtitle);
+            processSingleAsset(id, "audio");
+          }}
+          onUpdateVisualPrompt={updateVisualPrompt}
+          onClick={() => {
+            // ✅ 편집 모드 닫고, 개별 선택으로 복귀
+            setIsBreathEditing(false);
+            setActiveBreathKey(null);
+            setBreathEditText("");
+            const i2 = state.scenes.findIndex(x => x.id === s.id);
+            handleSeek(sceneTimeline[i2].start);
+          }}
+          // ✅ 편집 모드에서는 개별 노란테두리 금지
+          isActive={false}
+          onRetry={(id) => processSingleAsset(id, "image")}
+          onImageUpload={handleManualImageUpload}
+          skipInitialImageGen={state.skipInitialImageGen}
+
+          activeBreathKey={activeBreathKey}
+          breathEditText={breathEditText}
+          onBreathEditTextChange={(key, text) => setBreathEditText(text)}
+          onUpdateBreathGroupSubtitle={updateBreathGroupSubtitle}
+        />
+      );
+    }
+
+    // ✅ active 묶음 wrapper는 1번만
+    if (renderedBreath.has(breathKey)) return null;
+    renderedBreath.add(breathKey);
+
+    const groupScenes = breathGroups.get(breathKey) ?? [];
+
+    return (
+      <div key={`breath-wrap-${breathKey}`} className="relative">
+        {/* ✅ 레이아웃 안 밀리는 '오버레이 테두리' */}
+        <div className="pointer-events-none absolute inset-0 rounded-2xl border-2 border-yellow-400 z-10" />
+
+        <div className="space-y-2">
+          {groupScenes.map(gs => {
+            const i = state.scenes.findIndex(x => x.id === gs.id);
+            return (
+              <SceneCard
+                key={gs.id}
+                ref={el => (sceneRefs.current[gs.id] = el)}
+                scene={gs}
+                index={i}
+                metadata={state.metadata}
+                getBreathKey={() => (!gs.isHeader ? String((gs as any).breathId ?? "") : null)}
+                onRegenerateBreathGroup={(key) => {
+                  setActiveBreathKey(key);
+                  processBreathGroupAudio(key);
+                }}
+                onEnterAudioEditMode={(key) => {
+                  setActiveBreathKey(key);
+                  const groupText = state.scenes
+                    .filter(x => String((x as any).breathId) === key)
+                    .map(x => x.subtitle)
+                    .join("\n");
+                  setBreathEditText(groupText);
+                  setIsBreathEditing(true);
+                }}
+                onExitAudioEditMode={() => {
+                  setActiveBreathKey(null);
+                  setIsBreathEditing(false);
+                  setBreathEditText("");
+                }}
+                onRegenerateImage={(id, p) => {
+                  updateVisualPrompt(id, p || gs.visualPrompt);
+                  processSingleAsset(id, "image");
+                }}
+                onUpdateSubtitle={updateSubtitle}
+                onRegenerateAudio={(id, sub) => {
+                  updateSubtitle(id, sub || gs.subtitle);
+                  processSingleAsset(id, "audio");
+                }}
+                onUpdateVisualPrompt={updateVisualPrompt}
+                onClick={() => {
+                  // ✅ 편집 모드 유지 중 클릭은 씬 선택만(테두리는 묶음만)
+                  handleSeek(sceneTimeline[i].start);
+                }}
+                // ✅ 편집 모드에서는 씬별 노란테두리 금지
+                isActive={false}
+                onRetry={(id) => processSingleAsset(id, "image")}
+                onImageUpload={handleManualImageUpload}
+                skipInitialImageGen={state.skipInitialImageGen}
+
+                activeBreathKey={activeBreathKey}
+                breathEditText={breathEditText}
+                onBreathEditTextChange={(key, text) => setBreathEditText(text)}
+                onUpdateBreathGroupSubtitle={updateBreathGroupSubtitle}
+              />
+            );
+          })}
+        </div>
+      </div>
+    );
+  });
+})()}
+
+
+
+
 </div>
 
 

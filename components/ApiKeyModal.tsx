@@ -13,19 +13,23 @@ export default function ApiKeyModal({
 }: ApiKeyModalProps) {
   const [key, setKey] = useState(initialValue);
 
-  const save = () => onSaved(key);
+ const save = () => {
+  onSaved(key);
+  onClose();
+};
 
-  const clear = () => {
-    setKey("");
-    onSaved("");
-  };
+const clear = () => {
+  setKey("");
+  onSaved("");
+  onClose();
+};
 
   return (
     <div className="fixed inset-0 z-[9999] bg-black/70 flex items-center justify-center p-4">
       <div className="w-full max-w-lg rounded-2xl bg-zinc-950 border border-zinc-800 p-5">
         <div className="text-white font-black text-lg">Gemini API 키 입력</div>
         <div className="text-zinc-400 text-xs mt-1">
-          입력한 키는 브라우저 로컬스토리지에 저장됩니다.
+          입력한 키는 사용자의 브라우저에만 저장됩니다.
         </div>
 
         <textarea

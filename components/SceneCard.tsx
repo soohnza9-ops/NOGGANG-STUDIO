@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, forwardRef } from 'react';
 import { Scene, YouTubeMetadata } from '../types';
 import { Check, ImageIcon, Mic2, Trash2, AlertTriangle, Loader2, Edit3, X, UploadCloud, Video, FolderOpen, MousePointer2 } from 'lucide-react';
 
@@ -7,25 +7,74 @@ interface SceneCardProps {
   scene: Scene;
   index: number;
   metadata: YouTubeMetadata | null;
-  onRegenerateImage: (id: string, prompt?: string) => void; 
+
+  onRegenerateImage: (id: string, prompt?: string) => void;
   onUpdateSubtitle: (id: string, newSubtitle: string) => void;
-  onRegenerateAudio: (id: string, prompt?: string) => void; 
-  onUpdateVisualPrompt: (id: string, newVisualPrompt: string) => void; 
+  onRegenerateAudio: (id: string, prompt?: string) => void;
+  onUpdateVisualPrompt: (id: string, newVisualPrompt: string) => void;
   onDeleteScene: (id: string) => void;
+
   onClick: () => void;
   isActive: boolean;
   onRetry: (id: string) => void;
   onImageUpload: (id: string, base64: string, type?: 'image' | 'video') => void;
-  skipInitialImageGen?: boolean; // 수동 모드 여부
+  skipInitialImageGen?: boolean;
+
+  // ✅ 묶음(TTS)용
+  getBreathKey?: () => string | null;              // breathKey(=breathId)를 카드가 직접 가져오게
+  onRegenerateBreathGroup?: (breathKey: string) => void; // 해당 묶음만 오디오 재생성
+
+  // ✅ 오디오 편집 모드 알림용
+  onEnterAudioEditMode?: (breathKey: string) => void;
+  onExitAudioEditMode?: () => void;
+
+  // ✅ breath 묶음 "공용 텍스트" 편집용
+  activeBreathKey?: string | null;
+  breathEditText?: string;
+  onBreathEditTextChange?: (breathKey: string, text: string) => void;
+  onUpdateBreathGroupSubtitle?: (breathKey: string, text: string) => void;
 }
 
-const SceneCard: React.FC<SceneCardProps> = ({
-  scene, index, onRegenerateImage, onUpdateSubtitle, onRegenerateAudio, onUpdateVisualPrompt, onDeleteScene, onClick, isActive, onRetry, onImageUpload, skipInitialImageGen
-}) => {
+
+
+const SceneCard = forwardRef<HTMLDivElement, SceneCardProps>(({
+  scene,
+  index,
+  onRegenerateImage,
+  onUpdateSubtitle,
+  onRegenerateAudio,
+  onUpdateVisualPrompt,
+  onDeleteScene,
+  onClick,
+  isActive,
+
+  onRetry,
+  onImageUpload,
+  skipInitialImageGen,
+  getBreathKey,
+  onRegenerateBreathGroup,
+
+  onEnterAudioEditMode,
+  onExitAudioEditMode,
+
+  activeBreathKey,
+  breathEditText,
+  onBreathEditTextChange,
+  onUpdateBreathGroupSubtitle
+}, ref) => {
+
+
+
+
+  const breathKey = getBreathKey ? getBreathKey() : null;
+  const hasBreathGroup = !!breathKey;
+
   const [editedSubtitle, setEditedSubtitle] = useState(scene.subtitle);
+
   const [editedVisualPrompt, setEditedVisualPrompt] = useState(scene.visualPrompt);
   const [showImageEditor, setShowImageEditor] = useState(false);
   const [showAudioEditor, setShowAudioEditor] = useState(false);
+    const [showSubtitleEditor, setShowSubtitleEditor] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isImageRegenerating, setIsImageRegenerating] = useState(false);
 const [isAudioRegenerating, setIsAudioRegenerating] = useState(false);
@@ -71,20 +120,50 @@ const handleConfirmRegen = (type: 'image' | 'audio') => {
     if (!showImageEditor) {
       setShowImageEditor(true);
       setShowAudioEditor(false);
+      setShowSubtitleEditor(false);
       return;
     }
     setIsImageRegenerating(true);
     onRegenerateImage(scene.id, editedVisualPrompt);
-  } else {
-    if (!showAudioEditor) {
-      setShowAudioEditor(true);
-      setShowImageEditor(false);
-      return;
-    }
-    setIsAudioRegenerating(true);
-    onRegenerateAudio(scene.id, editedSubtitle);
+    return;
   }
+
+  // audio
+if (!showAudioEditor) {
+  setShowAudioEditor(true);
+  setShowImageEditor(false);
+  setShowSubtitleEditor(false);
+
+  if (breathKey && onEnterAudioEditMode) {
+    onEnterAudioEditMode(breathKey);
+  }
+
+  return;
+}
+
+
+  setIsAudioRegenerating(true);
+
+  // ✅ 먼저 "편집 텍스트" 저장
+  if (breathKey && onUpdateBreathGroupSubtitle) {
+    const text = (activeBreathKey === breathKey ? (breathEditText ?? '') : editedSubtitle);
+    onUpdateBreathGroupSubtitle(breathKey, text);
+  } else {
+    onUpdateSubtitle(scene.id, editedSubtitle);
+  }
+
+  // ✅ breathKey 있으면: "이 묶음만" 재생성
+  if (breathKey && onRegenerateBreathGroup) {
+    onRegenerateBreathGroup(breathKey);
+    return;
+  }
+
+
+  // ✅ breathKey 없으면: 기존처럼 씬 단위 재생성
+  onRegenerateAudio(scene.id, editedSubtitle);
 };
+
+
 
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -172,6 +251,7 @@ const handleDrop = (e: React.DragEvent) => {
 
   return (
     <div
+    ref={ref}
     onMouseDown={(e) => {
    if (scene.isHeader) e.stopPropagation();
   }}
@@ -189,16 +269,25 @@ const handleDrop = (e: React.DragEvent) => {
 }}
       onDragLeave={() => setIsDragging(false)}
       onDrop={handleDrop}
-      className={`
-        transition-all duration-200 cursor-pointer relative rounded-2xl border
-       ${scene.isHeader ? 'py-2 px-4 bg-zinc-100 border-zinc-300 shadow-sm z-20' : 'p-3 bg-zinc-900 border-zinc-800 hover:border-zinc-700'}
-        ${isActive && !scene.isHeader ? 'outline outline-[3px] outline-yellow-400 outline-offset-[-3px] z-10' : ''}
-        ${scene.status === 'error' ? 'border-yellow-500/50 bg-yellow-500/5' : ''}
-        ${isDragging ? 'bg-emerald-500/10 border-emerald-500 border-dashed' : ''}
-      `}
+className={`
+  transition-all duration-200 cursor-pointer relative rounded-2xl border
+  ${scene.isHeader ? 'py-2 px-4 bg-zinc-100 border-zinc-300 shadow-sm z-20' : 'p-3 bg-zinc-900'}
+  ${
+!scene.isHeader && isActive && !showAudioEditor && activeBreathKey === null
+  ? 'border-yellow-400 shadow-[0_0_0_2px_rgba(250,204,21,0.9)] z-20'
+      : 'border-zinc-800 hover:border-zinc-700'
+  }
+  ${scene.status === 'error' ? 'border-yellow-500/50 bg-yellow-500/5' : ''}
+  ${isDragging ? 'bg-emerald-500/10 border-emerald-500 border-dashed' : ''}
+`}
+
+
+
     >
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
+
+
           <span className={`text-[9px] font-black uppercase tracking-wider ${scene.isHeader ? 'text-zinc-600' : 'text-zinc-500'}`}>
             {scene.isHeader ? "Section Header" : `Scene ${index + 1}`}
           </span>
@@ -316,44 +405,80 @@ const handleDrop = (e: React.DragEvent) => {
             </div>
             
             <div className="flex-grow min-w-0 flex flex-col justify-between">
-               <p className="text-[13px] text-zinc-200 font-bold line-clamp-2 leading-relaxed mb-2">{scene.subtitle}</p>
-               <div className="flex gap-2 justify-end">
-                <button 
-                  ref={imageBtnRef}
-                  onClick={(e) => {
-  e.stopPropagation();
-  if (isExporting) return;
-  handleConfirmRegen('image');
-}}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black transition-all border shadow-sm ${showImageEditor ? 'bg-yellow-400 text-black border-yellow-500' : 'bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20 active:scale-95'}`}
-                >
-                  {isImageRegenerating
-  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-  : <ImageIcon className="w-3.5 h-3.5" />
-}
+<p className="text-[13px] text-zinc-200 font-bold whitespace-pre-line leading-relaxed mb-2">
+  {showSubtitleEditor
+    ? editedSubtitle
+    : scene.subtitle}
+</p>
+              <div className="flex gap-2 justify-end">
 
-                  {showImageEditor ? '지금 생성' : 'AI 이미지 생성'}
-                </button>
-               <button 
-  ref={audioBtnRef}
- onClick={(e) => {
-  e.stopPropagation();
-  if (isExporting) return;
-  handleConfirmRegen('audio');
-}}
-  disabled={scene.status === 'generating' && !scene.audioBuffer}
-  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black transition-all border shadow-sm ${showAudioEditor ? 'bg-yellow-400 text-black border-yellow-500' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20 active:scale-95'}`}
->
-  {/* 생성 중이면 로더 아이콘, 아니면 마이크 아이콘 */}
-  {isAudioRegenerating
-  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-  : <Mic2 className="w-3.5 h-3.5" />
-}
+  {/* 이미지 재생성 */}
+  <button 
+    ref={imageBtnRef}
+    onClick={(e) => {
+      e.stopPropagation();
+      if (isExporting) return;
+      handleConfirmRegen('image');
+    }}
+    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black transition-all border shadow-sm ${
+      showImageEditor
+        ? 'bg-yellow-400 text-black border-yellow-500'
+        : 'bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20 active:scale-95'
+    }`}
+  >
+    {isImageRegenerating
+      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+      : <ImageIcon className="w-3.5 h-3.5" />
+    }
+    {showImageEditor ? '지금 생성' : '이미지 재생성'}
+  </button>
 
-  {/* 생성 중이면 상태 표시, 아니면 버튼 이름 표시 */}
-  {(scene.status === 'generating' && !scene.audioBuffer) ? '생성 중...' : (showAudioEditor ? '지금 생성' : '오디오 재생성')}
-</button>
-              </div>
+  {/* 오디오 재생성 (묶음용) */}
+  <button 
+    ref={audioBtnRef}
+    onClick={(e) => {
+      e.stopPropagation();
+      if (isExporting) return;
+      handleConfirmRegen('audio');
+    }}
+    disabled={scene.status === 'generating' && !scene.audioBuffer}
+    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black transition-all border shadow-sm ${
+      showAudioEditor
+        ? 'bg-yellow-400 text-black border-yellow-500'
+        : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20 active:scale-95'
+    }`}
+  >
+    {isAudioRegenerating
+      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+      : <Mic2 className="w-3.5 h-3.5" />
+    }
+    {showAudioEditor
+      ? '지금 생성'
+      : hasBreathGroup
+        ? '오디오 재생성'
+        : '오디오 재생성'}
+  </button>
+
+  {/* 자막 수정 */}
+  <button
+    onClick={(e) => {
+      e.stopPropagation();
+      setShowAudioEditor(false);
+      setShowImageEditor(false);
+      setShowSubtitleEditor(v => !v);
+    }}
+    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black transition-all border shadow-sm ${
+      showSubtitleEditor
+        ? 'bg-yellow-400 text-black border-yellow-500'
+        : 'bg-zinc-800/60 text-zinc-200 border-zinc-700/60 hover:bg-zinc-800 active:scale-95'
+    }`}
+  >
+    자막 수정
+  </button>
+
+
+</div>
+
             </div>
           </div>
 
@@ -370,18 +495,96 @@ const handleDrop = (e: React.DragEvent) => {
             </div>
           )}
 
-          {showAudioEditor && (
-            <div ref={audioEditorRef} className="mt-1 p-3 bg-zinc-950 rounded-xl border border-emerald-500/30 animate-in slide-in-from-top-1 duration-200" onClick={e => e.stopPropagation()}>
-               <div className="flex justify-between items-center mb-2">
-                 <label className="text-[10px] text-emerald-400 font-black uppercase tracking-widest">자막 및 대사 수정</label>
-                 <button onClick={() => setShowAudioEditor(false)} className="text-zinc-500 hover:text-white transition-colors"><X className="w-4 h-4"/></button>
-               </div>
-               <textarea 
-                  value={editedSubtitle} onChange={(e) => setEditedSubtitle(e.target.value)} onBlur={() => onUpdateSubtitle(scene.id, editedSubtitle)}
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-3 text-[12px] text-zinc-200 font-bold focus:border-emerald-500/50 outline-none resize-none leading-relaxed" rows={2} autoFocus
-                />
-            </div>
-          )}
+{showAudioEditor && (
+  <div
+    ref={audioEditorRef}
+    className="mt-1 p-3 bg-zinc-950 rounded-xl border border-emerald-500/30 animate-in slide-in-from-top-1 duration-200"
+    onClick={e => e.stopPropagation()}
+  >
+    <div className="flex justify-between items-center mb-2">
+      <label className="text-[10px] text-emerald-400 font-black uppercase tracking-widest">
+        자막 및 대사 수정
+      </label>
+
+      <button
+        onClick={() => {
+          setShowAudioEditor(false);
+
+          if (breathKey && onUpdateBreathGroupSubtitle) {
+  onUpdateBreathGroupSubtitle(breathKey, breathEditText ?? '');
+} else {
+            onUpdateSubtitle(scene.id, editedSubtitle);
+          }
+
+          if (onExitAudioEditMode) onExitAudioEditMode();
+        }}
+        className="text-zinc-500 hover:text-white transition-colors"
+      >
+        <X className="w-4 h-4"/>
+      </button>
+    </div>
+
+    <textarea
+      value={
+        breathKey && activeBreathKey === breathKey
+          ? (breathEditText ?? '')
+          : editedSubtitle
+      }
+      onChange={(e) => {
+        const v = e.target.value;
+
+        if (breathKey && activeBreathKey === breathKey && onBreathEditTextChange) {
+          onBreathEditTextChange(breathKey, v);
+          return;
+        }
+
+        setEditedSubtitle(v);
+      }}
+      onBlur={() => {
+        if (breathKey && activeBreathKey === breathKey && onUpdateBreathGroupSubtitle) {
+          onUpdateBreathGroupSubtitle(breathKey, breathEditText ?? '');
+          return;
+        }
+        onUpdateSubtitle(scene.id, editedSubtitle);
+      }}
+      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-3 text-[12px] text-zinc-200 font-bold focus:border-emerald-500/50 outline-none resize-none leading-relaxed"
+      rows={3}
+      autoFocus
+    />
+  </div>
+)}
+
+{showSubtitleEditor && (
+  <div
+    className="mt-1 p-3 bg-zinc-950 rounded-xl border border-zinc-500/30 animate-in slide-in-from-top-1 duration-200"
+    onClick={e => e.stopPropagation()}
+  >
+    <div className="flex justify-between items-center mb-2">
+      <label className="text-[10px] text-zinc-300 font-black uppercase tracking-widest">
+        자막 수정
+      </label>
+      <button
+        onClick={() => {
+          onUpdateSubtitle(scene.id, editedSubtitle);
+          setShowSubtitleEditor(false);
+        }}
+        className="text-yellow-400 font-black text-xs hover:text-yellow-300"
+      >
+        완료
+      </button>
+    </div>
+
+    <textarea
+      value={editedSubtitle}
+      onChange={(e) => setEditedSubtitle(e.target.value)}
+      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-3 text-[12px] text-zinc-200 font-bold focus:border-zinc-500/50 outline-none resize-none leading-relaxed"
+      rows={3}
+      autoFocus
+    />
+  </div>
+)}
+
+
         </div>
       ) : (
         <div className="flex items-center gap-2">
@@ -391,6 +594,6 @@ const handleDrop = (e: React.DragEvent) => {
       )}
     </div>
   );
-};
+});
 
 export default SceneCard;

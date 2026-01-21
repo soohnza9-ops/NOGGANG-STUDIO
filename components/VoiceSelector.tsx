@@ -273,10 +273,14 @@ const speakingRate = Math.max(0.5, Math.min(2.0, Number(voiceSpeed) || 1.0));
       </div>
 
       {/* 성우 버튼 */}
-      <div
+<div
   ref={scrollRef}
   onScroll={handleScroll}
-  className="overflow-x-auto pb-2 [-webkit-overflow-scrolling:touch] voice-scroll"
+  className="overflow-x-auto pb-2 [-webkit-overflow-scrolling:touch]"
+  style={{
+    scrollbarWidth: 'thin',
+    scrollbarColor: '#3f3f46 transparent'
+  }}
 >
         <div className="min-w-max space-y-3 pr-2">
           <div className="flex gap-2">

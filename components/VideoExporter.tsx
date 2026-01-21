@@ -507,16 +507,40 @@ const target = dur * ratio;
 
       const limitRatio = settings2.aspectRatio === '9:16' ? 0.9 : 0.95;
 
-      const cleanSubtitle = String(entry?.scene?.subtitle || '')
-        .replace(/\r?\n+/g, ' ')
-        .replace(/\r/g, '')
-        .replace(/\s{2,}/g, ' ')
-        .trim();
-
+  
       const maxTextWidth = w * limitRatio;
 
-      const lines =
-        cleanSubtitle.length <= 6 ? [cleanSubtitle] : getBalancedLines(ctx, cleanSubtitle, maxTextWidth, settings2.subtitleSize);
+    // ✅ 장면에서 이미 확정된 줄바꿈 그대로 사용 (미리보기와 100% 동일)
+// ✅ 미리보기와 동일한 줄 계산 로직 적용
+const rawSubtitle = String(entry?.scene?.subtitle || '')
+  .replace(/\r/g, '')
+  .trim();
+
+let lines: string[] = [];
+
+if (rawSubtitle.includes('\n')) {
+  // 이미 줄이 나뉜 경우: 각 줄을 다시 폭 기준으로 보정
+  const parts = rawSubtitle.split('\n').map(s => s.trim()).filter(Boolean);
+  for (const p of parts) {
+    const balanced = getBalancedLines(
+      ctx,
+      p,
+      maxTextWidth,
+      settings2.subtitleSize
+    );
+    lines.push(...balanced);
+  }
+} else {
+  // 줄바꿈 없는 경우: 미리보기와 동일 계산
+  lines = getBalancedLines(
+    ctx,
+    rawSubtitle,
+    maxTextWidth,
+    settings2.subtitleSize
+  );
+}
+
+
 
       const lineH = baseFS * 1.45;
       const textBlockH = lines.length * lineH;
