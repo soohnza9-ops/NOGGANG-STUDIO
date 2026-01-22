@@ -1,17 +1,19 @@
 {
-  "name": "노깡 STUDIO",
+"name": "noggang-studio",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "main": "electron/main.cjs",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "electron": "electron ."
-  },
+"scripts": {
+  "dev": "vite",
+  "build:web": "vite build",
+  "build:app": "npm run build:web && electron-builder",
+  "preview": "vite preview",
+  "electron": "electron ."
+},
   "dependencies": {
     "@google/genai": "^1.33.0",
+    "electron-updater": "^6.7.3",
     "firebase": "^12.7.0",
     "jszip": "3.10.1",
     "lucide-react": "^0.561.0",
@@ -25,7 +27,23 @@
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
     "electron": "^40.0.0",
+    "electron-builder": "^26.4.0",
     "typescript": "~5.8.2",
     "vite": "^6.4.1"
   }
+  ,
+"build": {
+  "appId": "com.noggang.studio",
+  "productName": "노깡 STUDIO",
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "package.json"
+  ],
+  "win": {
+    "target": "nsis",
+    "icon": "electron/icon.ico",
+    "sign": false
+  }
+}
 }

@@ -1311,7 +1311,7 @@ processFullBatch('audio');
 };
 
 
- const handleDownloadAllAssets = async () => {
+const handleDownloadAllAssets = async () => {
   if (isZipping) return;
   setIsZipping(true);
   setZipProgress(0);
@@ -1324,62 +1324,67 @@ processFullBatch('audio');
   const total = spokenScenes.length;
 
   try {
-   const srtEntries: string[] = [];
-let cursor = 0;
+    const srtEntries: string[] = [];
+    let cursor = 0;
 
-for (let i = 0; i < total; i++) {
-  const scene = spokenScenes[i];
-  const sceneNum = (i + 1).toString().padStart(3, '0');
+    for (let i = 0; i < total; i++) {
+      const scene = spokenScenes[i];
+      const sceneNum = (i + 1).toString().padStart(3, '0');
 
-  if (!scene.audioBuffer) {
-    setZipProgress(Math.round(((i + 1) / total) * 100));
-    continue;
-  }
+      if (!scene.audioBuffer) {
+        setZipProgress(Math.round(((i + 1) / total) * 100));
+        continue;
+      }
 
-  const duration = scene.audioBuffer.duration;
-  const start = cursor;
-  const end = cursor + duration;
+      const duration = scene.audioBuffer.duration;
+      const start = cursor;
+      const end = cursor + duration;
 
-  const assetSubtitle = formatAssetSubtitle(
-    scene.subtitle,
-    state.videoSettings.subtitleSize
-  );
+      const assetSubtitle = formatAssetSubtitle(
+        scene.subtitle,
+        state.videoSettings.subtitleSize
+      );
 
-  // 전체 SRT용
-  srtEntries.push(
-    `${i + 1}\n` +
-    `${formatSrtTime(start)} --> ${formatSrtTime(end)}\n` +
-    `${assetSubtitle}\n`
-  );
+      // ✅ 전체 SRT용 엔트리만 누적 (씬별 SRT 저장은 하지 않음)
+      srtEntries.push(
+        `${i + 1}\n` +
+        `${formatSrtTime(start)} --> ${formatSrtTime(end)}\n` +
+        `${assetSubtitle}\n`
+      );
 
-  // 장면별 SRT
-  srtFolder?.file(
-    `scene_${sceneNum}.srt`,
-    `1\n00:00:00,000 --> ${formatSrtTime(duration)}\n${assetSubtitle}\n`
-  );
+      // ✅ 이미지/영상은 그대로 저장
+      if (scene.imageUrl) {
+        try {
+          const res = await fetch(scene.imageUrl);
+          const blob = await res.blob();
+          const ext = scene.userAssetType === 'video' ? 'mp4' : 'png';
+          imagesFolder?.file(`scene_${sceneNum}.${ext}`, blob);
+        } catch {}
+      }
 
+      // ❌ 씬별 WAV 저장 제거 (통오디오만 저장할 것)
+      // audioFolder?.file(
+      //   `scene_${sceneNum}.wav`,
+      //   audioBufferToWav(scene.audioBuffer)
+      // );
 
-  if (scene.imageUrl) {
-    try {
-      const res = await fetch(scene.imageUrl);
-      const blob = await res.blob();
-      const ext = scene.userAssetType === 'video' ? 'mp4' : 'png';
-      imagesFolder?.file(`scene_${sceneNum}.${ext}`, blob);
-    } catch {}
-  }
+      cursor = end;
+      setZipProgress(Math.round(((i + 1) / total) * 100));
+    }
 
-  audioFolder?.file(
-    `scene_${sceneNum}.wav`,
-    audioBufferToWav(scene.audioBuffer)
-  );
+    // ✅ 통 자막 1개만 저장
+    srtFolder?.file(
+      "full_subtitles.srt",
+      srtEntries.join('\n')
+    );
 
-  cursor = end;
-  setZipProgress(Math.round(((i + 1) / total) * 100));
-}
-
-
-
-    zip.file(`${state.metadata?.title || 'script'}_full_subtitles.srt`, srtEntries.join('\n'));
+    // ✅ 통 오디오 1개만 저장 (fullSpeechAudioBuffer 사용)
+    if (fullSpeechAudioBuffer) {
+      audioFolder?.file(
+        "full_audio.wav",
+        audioBufferToWav(fullSpeechAudioBuffer)
+      );
+    }
 
     const content = await zip.generateAsync({ type: "blob" });
     const a = document.createElement("a");
@@ -1391,6 +1396,7 @@ for (let i = 0; i < total; i++) {
     setZipProgress(0);
   }
 };
+
 
 
  const stopPreview = () => {
@@ -1655,7 +1661,9 @@ breathEditTextRef.current = "";
         <>
           <Header />
           <div className="h-10 flex-shrink-0" />
-          <main className="w-full mx-auto px-24 py-6 flex flex-col gap-4 overflow-y-auto">
+       <main className="w-full mx-auto px-24 py-6 flex flex-col gap-4">
+
+
 
 
          {/* 🎛️ 영상 / 음성 설정 */}
@@ -1842,7 +1850,7 @@ breathEditTextRef.current = "";
                 onClick={() => window.location.href = "/"}
                 className="flex items-center gap-2 hover:opacity-80"
               >
-                <img src="/logo.png" className="w-7 h-7" />
+                <img src={import.meta.env.BASE_URL + "logo.png"} className="w-7 h-7" />
                 <span className="font-black text-sm">노깡 STUDIO</span>
               </button>
 
@@ -1931,8 +1939,9 @@ breathEditTextRef.current = "";
             </div>
           </header>
 
-          <main className="flex-grow flex flex-col lg:flex-row overflow-hidden p-6 gap-6 h-[calc(100vh-80px)]">
-            <div className="lg:w-1/2 flex flex-col gap-4 h-full">
+         <main className="flex-grow flex flex-col lg:flex-row p-6 gap-6 h-[calc(100vh-80px)] min-h-0">
+
+           <div className="lg:w-1/2 flex flex-col gap-4 min-h-0">
               <div className="flex-grow flex items-center justify-center bg-zinc-950/30 rounded-3xl border border-zinc-800/50 p-4 min-h-0">
                 <div
                   id="preview-container"
@@ -2098,10 +2107,11 @@ breathEditTextRef.current = "";
             </div>
 
 <div
-  className={`lg:w-1/2 overflow-y-auto overflow-x-hidden flex flex-col gap-2 h-full pr-1 transition-all ${
+  className={`lg:w-1/2 flex flex-col gap-2 h-full pr-1 transition-all ${
     isExporting ? 'pointer-events-none relative z-0' : 'relative z-10'
   }`}
 >
+
 
 
 

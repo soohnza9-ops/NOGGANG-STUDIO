@@ -1,30 +1,47 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+
+// 🔥 반드시 app 사용 전에 실행되어야 함
+app.commandLine.appendSwitch(
+  'disable-features',
+  'OverlayScrollbar,OverlayScrollbarWinStyle'
+);
+
 const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { dialog } = require('electron');
+
 const STORE_PATH = path.join(app.getPath('userData'), 'export-path.json');
 const jobs = new Map();
 
-app.setName('노깡 STUDIO'); // ✅ 이 줄 (createWindow보다 위)
+app.setName('노깡 STUDIO');
+
 
 function createWindow() {
-  const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    title: '노깡 STUDIO', // ✅ (선택이지만 추천)
-    icon: path.join(__dirname, 'icon.ico'), // ✅ 이 줄
-    webPreferences: {
-  preload: path.join(__dirname, 'preload.js'),
-  contextIsolation: true,
-  nodeIntegration: false,
-},
+const win = new BrowserWindow({
+  width: 1280,
+  height: 800,
+  title: '노깡 STUDIO',
+  backgroundColor: '#000000',
+  icon: path.join(__dirname, 'icon.ico'),
+  webPreferences: {
+    preload: path.join(__dirname, 'preload.js'),
+    contextIsolation: true,
+    nodeIntegration: false,
+    scrollBounce: false,
+  },
+});
 
-  });
 
   // Vite dev 서버
- win.loadURL('http://localhost:3000');
+const isDev = !app.isPackaged;
+
+if (isDev) {
+  win.loadURL("http://localhost:3000");
+} else {
+  win.loadFile(path.join(app.getAppPath(), "dist/index.html"));
+}
+
 
  }
 

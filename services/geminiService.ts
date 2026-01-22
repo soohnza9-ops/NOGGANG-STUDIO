@@ -176,7 +176,7 @@ export async function applyMastering(buffer: AudioBuffer): Promise<AudioBuffer> 
   compressor.release.setValueAtTime(0.25, offlineCtx.currentTime);
 
   const gain = offlineCtx.createGain();
-gain.gain.setValueAtTime(0.9, offlineCtx.currentTime);
+  gain.gain.setValueAtTime(1.15, offlineCtx.currentTime);
 
   source.connect(compressor);
   compressor.connect(gain);
@@ -308,7 +308,7 @@ const today = new Date();
 const y = today.getFullYear();
 const m = String(today.getMonth() + 1).padStart(2, "0");
 const d = String(today.getDate()).padStart(2, "0");
-const dateTitle = `${y}${m}${d}`;
+const dateTitle = `${y}.${m}.${d}`;
 
 data.metadata = {
   title: dateTitle,

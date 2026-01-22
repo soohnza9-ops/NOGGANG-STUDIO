@@ -11,19 +11,23 @@ export interface Scene {
   visualGroupId: string;
   visualPrompt: string;
   subtitle: string;
+
   estimatedDurationSeconds?: number;
   imageUrl?: string;
   audioData?: string;
   audioBuffer?: AudioBuffer;
+
   status: 'pending' | 'generating' | 'completed' | 'error';
   errorMessage?: string;
   isHeader: boolean;
+
   isUserAsset?: boolean;
   userAssetType?: 'image' | 'video';
+
+  // ✅ TTS 묶음용
   breathId?: number;
-  audioStart?: number;
-  audioEnd?: number;
 }
+
 
 export interface YouTubeMetadata {
   title: string;

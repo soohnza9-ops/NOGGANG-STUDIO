@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { auth } from "../services/firebase";
-import Login from "./Login";
+import { useLocation, Navigate } from "react-router-dom";
 
-export default function AuthGate({ children }: { children: React.ReactNode }) {
+export default function AuthPage({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const location = useLocation();
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -23,7 +24,9 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (!user) return <Login />;
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
 
   return <>{children}</>;
 }

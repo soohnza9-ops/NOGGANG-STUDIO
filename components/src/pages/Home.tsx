@@ -34,15 +34,17 @@ const Home: React.FC = () => {
   const [apiKey, setApiKey] = useState("");
   const [openKeyModal, setOpenKeyModal] = useState(false);
 
-  useEffect(() => {
-    setApiKey(localStorage.getItem("GEMINI_API_KEY") || "");
-  }, []);
+useEffect(() => {
+  setApiKey(localStorage.getItem("GEMINI_API_KEY") || "");
+}, []);
 
   const handleClick = (tool: Tool) => {
-    if (!apiKey) {
-      setOpenKeyModal(true);
-      return;
-    }
+if (!apiKey) {
+  setOpenKeyModal(true);
+  return;
+}
+
+
     if (!tool.enabled) return;
     navigate("/app");
   };
@@ -55,16 +57,18 @@ const Home: React.FC = () => {
  {/* Main */}
       <main className="flex-1 flex flex-col">
         <div className="flex-1 px-24 py-16">
-          <Dashboard
-            onSelectTool={(toolId) => {
-              if (!apiKey) {
-                setOpenKeyModal(true);
-                return;
-              }
-              if (toolId !== "video") return;
-              navigate("/app");
-            }}
-          />
+<Dashboard
+  onSelectTool={(toolId) => {
+    if (!apiKey) {
+      setOpenKeyModal(true);
+      return;
+    }
+
+    if (toolId !== "video") return;
+    navigate("/app");
+  }}
+/>
+
         </div>
       </main>
 

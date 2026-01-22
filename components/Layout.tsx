@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from "react";
-import { Outlet, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { Outlet, NavLink, useLocation } from "react-router-dom";
 import {
   Video,
   Image as ImageIcon,
@@ -32,80 +32,70 @@ const TOOLS: Tool[] = [
 
 const Layout: React.FC = () => {
   const location = useLocation();
-const isEditor = location.pathname.startsWith("/app");
+  const isEditor = location.pathname.startsWith("/app");
 
-  // 홈은 기본 열림, /app은 기본 닫힘 (하지만 홈에서도 토글 가능)
-const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
 
   const isActivePath = useMemo(() => {
-    // /app 에 있을 때 "AI 자동화 영상 제작" 활성 표시를 위해
     return location.pathname.startsWith("/app");
   }, [location.pathname]);
-useEffect(() => {
-  if (location.pathname === "/") {
-    setSidebarOpen(true);
-  } else if (location.pathname.startsWith("/app")) {
-    setSidebarOpen(false);
-  }
-}, [location.pathname]);
+
+  useEffect(() => {
+    if (location.pathname === "/") {
+      setSidebarOpen(true);
+    } else if (location.pathname.startsWith("/app")) {
+      setSidebarOpen(false);
+    }
+  }, [location.pathname]);
 
   return (
-    <div className="min-h-screen bg-black text-white">
+<div className="h-full bg-black text-white overflow-hidden flex flex-col">
       {/* Header (편집화면에서는 숨김) */}
-{!isEditor && <Header />}
+      {!isEditor && <Header />}
 
-      {/* 아래 전체 레이아웃 */}
-     <div className="flex min-h-screen">
-        {/* Sidebar (항상) */}
-<aside
-  className={`pt-16 bg-zinc-950 border-r border-zinc-800 flex-shrink-0 transition-all duration-200
-    sticky top-0 h-screen
-    ${sidebarOpen ? "w-64" : "w-14"}
-  `}
->
+      {/* 바디 영역 (헤더 아래) */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Sidebar */}
+        <aside
+          className={`bg-zinc-950 border-r border-zinc-800 flex-shrink-0 transition-all duration-200 sticky top-0 h-full ${
+            sidebarOpen ? "w-64" : "w-14"
+          }`}
+        >
+          {/* 닫힘 상태에서 여는 버튼 */}
+          {!sidebarOpen && (
+            <div className="px-3 py-4 flex justify-center">
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(true)}
+                className="p-2 rounded-lg bg-zinc-900 border border-zinc-700 hover:bg-zinc-800"
+                aria-label="사이드바 열기"
+              >
+                <ChevronRight className="w-5 h-5" />
+              </button>
+            </div>
+          )}
 
+          {/* 섹션 타이틀 */}
+          <div className="px-4 pt-4 pb-3">
+            {sidebarOpen ? (
+              <div className="w-full rounded-lg bg-zinc-800 px-4 py-2 flex items-center justify-between">
+                <h3 className="text-xs font-black tracking-widest text-yellow-400 whitespace-nowrap">
+                  AI TOOLS
+                </h3>
 
-              {/* 🔹 사이드바 닫힘 상태에서 여는 버튼 */}
-  {!sidebarOpen && (
-    <div className="px-3 py-4 flex justify-center">
-      <button
-        type="button"
-        onClick={() => setSidebarOpen(true)}
-        className="p-2 rounded-lg bg-zinc-900 border border-zinc-700 hover:bg-zinc-800"
-        aria-label="사이드바 열기"
-      >
-        <ChevronRight className="w-5 h-5" />
-      </button>
-    </div>
-  )}
-
-
-
-
-          {/* ✅ 섹션 타이틀: 메뉴 위에 '도구 바로가기' */}
-<div className="px-4 pt-4 pb-3">
-  {sidebarOpen ? (
-    <div className="w-full rounded-lg bg-zinc-800 px-4 py-2 flex items-center justify-between">
-      <h3 className="text-xs font-black tracking-widest text-yellow-400 whitespace-nowrap">
-        AI TOOLS
-      </h3>
-
-      <button
-        type="button"
-        onClick={() => setSidebarOpen(v => !v)}
-        className="ml-2 flex-shrink-0 p-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 transition"
-        aria-label="사이드바 접기"
-      >
-        <ChevronLeft className="w-4 h-4 text-white" />
-      </button>
-    </div>
-  ) : (
-    <div className="h-4" />
-  )}
-</div>
-
-
-
+                <button
+                  type="button"
+                  onClick={() => setSidebarOpen(v => !v)}
+                  className="ml-2 flex-shrink-0 p-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 transition"
+                  aria-label="사이드바 접기"
+                >
+                  <ChevronLeft className="w-4 h-4 text-white" />
+                </button>
+              </div>
+            ) : (
+              <div className="h-4" />
+            )}
+          </div>
 
           {/* Nav */}
           <nav className="px-3 pb-6 space-y-1">
@@ -114,35 +104,39 @@ useEffect(() => {
               const disabled = !t.enabled;
               const active = t.id === "video" ? isActivePath : false;
 
-             const base =
-  "w-full flex items-center justify-center px-3 py-3 rounded-xl transition-colors";
+              const base =
+                "w-full flex items-center justify-center px-3 py-3 rounded-xl transition-colors";
               const enabledCls = active
                 ? "bg-zinc-900 text-yellow-400"
                 : "text-zinc-300 hover:bg-zinc-900 hover:text-yellow-400";
               const disabledCls = "text-zinc-600 cursor-not-allowed";
 
-             const content = (
-  <div
-    className={`flex items-center w-full ${
-      sidebarOpen ? "gap-3 justify-start" : "justify-center"
-    }`}
-  >
-    <Icon className="w-5 h-5 flex-shrink-0" />
+              const content = (
+                <div
+                  className={`flex items-center w-full ${
+                    sidebarOpen ? "gap-3 justify-start" : "justify-center"
+                  }`}
+                >
+                  <Icon className="w-5 h-5 flex-shrink-0" />
 
-    {sidebarOpen && (
-      <span className="flex-1 text-left truncate">{t.title}</span>
-    )}
+                  {sidebarOpen && (
+                    <span className="flex-1 text-left truncate">{t.title}</span>
+                  )}
 
-    {sidebarOpen && disabled && (
-      <Lock className="w-4 h-4 text-zinc-600" />
-    )}
-  </div>
-);
-
+                  {sidebarOpen && disabled && (
+                    <Lock className="w-4 h-4 text-zinc-600" />
+                  )}
+                </div>
+              );
 
               if (disabled) {
                 return (
-                  <button key={t.id} type="button" disabled className={`${base} ${disabledCls}`}>
+                  <button
+                    key={t.id}
+                    type="button"
+                    disabled
+                    className={`${base} ${disabledCls}`}
+                  >
                     {content}
                   </button>
                 );
@@ -164,9 +158,14 @@ useEffect(() => {
         </aside>
 
         {/* Main content */}
-       <main className={`${isEditor ? "pt-0" : "pt-16"} flex-1 min-w-0`}>
-          <Outlet />
-        </main>
+<main className="flex-1 min-w-0 min-h-0">
+  <div className="h-full overflow-y-auto overflow-x-hidden nog-scroll">
+    <Outlet />
+  </div>
+</main>
+
+
+
       </div>
     </div>
   );
