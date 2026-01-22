@@ -382,8 +382,8 @@ mixBus.connect(offline.destination);
 const baseVol = Math.max(0, bgmVolume || 0) * 1.25;
         g.gain.setValueAtTime(0, 0);
 
-        const fadeIn = 1.0;
-        const fadeOut = 2.0;
+        const fadeIn = 0.3;
+const fadeOut = 0.6;
 
         g.gain.linearRampToValueAtTime(baseVol, fadeIn);
         g.gain.setValueAtTime(baseVol, Math.max(0, endT - fadeOut));
@@ -761,7 +761,11 @@ await renderFrame(ctx, w, h, t, sceneTimeline, scenes, settings);
   <div ref={exportingBtnWrapRef} className="relative w-2/3">
     <div className="w-full py-4 rounded-2xl font-black text-xl bg-yellow-400 text-black flex items-center justify-center gap-2 pointer-events-none">
       <Loader2 className="w-5 h-5 animate-spin" />
-      <span>제작 중 ({exportProgress}%)</span>
+      <span>
+  {exportProgress < 100
+    ? `제작 중 (${exportProgress}%)`
+    : '영상 저장 중… 100% '}
+</span>
     </div>
   </div>
 ) : (
