@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
+const { autoUpdater } = require("electron-updater");
 
 // 🔥 반드시 app 사용 전에 실행되어야 함
 app.commandLine.appendSwitch(
@@ -38,7 +39,7 @@ function createWindow() {
   if (isDev) {
     win.loadURL("http://localhost:3000");
   } else {
-    win.loadFile(path.join(app.getAppPath(), "dist/index.html"));
+win.loadFile(path.join(__dirname, "../dist/index.html"));
   }
 }
 
@@ -156,6 +157,7 @@ ipcMain.handle('export:cancel', async (e, { jobId }) => {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);   // 🔥 기본 메뉴(File, Edit…) 제거
   createWindow();
+  autoUpdater.checkForUpdatesAndNotify();
 });
 
 app.on('window-all-closed', () => {
