@@ -39,10 +39,11 @@ const Header: React.FC = () => {
             onClick={() => navigate("/")}
             className="flex items-center gap-3 hover:opacity-80"
           >
-            <img
-              src="/logo.png"
-              alt="노깡 로고"
-              className="w-9 h-9 object-contain"
+<img
+  src={import.meta.env.BASE_URL + "logo.png"}
+  alt="노깡 로고"
+  className="w-9 h-9 object-contain"
+
               draggable={false}
             />
             <h1 className="text-lg font-black text-white">노깡 STUDIO</h1>

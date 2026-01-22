@@ -143,8 +143,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectTool }) => {
         </div>
 
         <div className="absolute -right-20 -bottom-20 w-80 h-80 bg-yellow-400/10 blur-[100px] rounded-full"></div>
-       <img
-  src="/logo.png"
+<img
+  src={import.meta.env.BASE_URL + "logo.png"}
   alt="NOGGANG STUDIO Logo"
   className="
     absolute right-6 top-6

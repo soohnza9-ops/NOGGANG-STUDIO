@@ -32,18 +32,32 @@
     "vite": "^6.4.1"
   }
   ,
-"build": {
+  
+
+  "build": {
   "appId": "com.noggang.studio",
   "productName": "노깡 STUDIO",
+
+  "directories": {
+    "buildResources": "build"
+  },
+
   "files": [
     "dist/**/*",
     "electron/**/*",
     "package.json"
   ],
+
   "win": {
     "target": "nsis",
-    "icon": "electron/icon.ico",
-    "sign": false
+    "icon": "icon.ico"
+  },
+
+  "nsis": {
+    "installerIcon": "icon.ico",
+    "uninstallerIcon": "icon.ico",
+    "installerHeaderIcon": "icon.ico"
   }
 }
+
 }
