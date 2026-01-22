@@ -287,9 +287,7 @@ const handleDrop = (e: React.DragEvent) => {
   return (
     <div
     ref={ref}
-    onMouseDown={(e) => {
-   if (scene.isHeader) e.stopPropagation();
-  }}
+
       onClick={(e) => {
    if (scene.isHeader) {
      e.stopPropagation();
@@ -347,18 +345,19 @@ className={`
             </>
           )}
         </div>
-       <button
+<button
   disabled={isExporting}
-  onClick={(e) => {
+  onMouseDown={(e) => {
     e.stopPropagation();
+    e.preventDefault();   // SceneCard 쪽 mousedown에 먹히는 것 방지
     if (isExporting) return;
     onDeleteScene(scene.id);
   }}
   className={`p-1 transition-colors ${isExporting ? 'text-zinc-700 cursor-not-allowed' : 'text-zinc-600 hover:text-red-400'}`}
 >
+  <Trash2 className="w-3 h-3" />
+</button>
 
-          <Trash2 className="w-3 h-3" />
-        </button>
       </div>
 
       {!scene.isHeader ? (

@@ -859,7 +859,8 @@ export const generateAudioBatch = async (
           pitch,
           ctx
         );
-
+const mastered = await applyMastering(buffer);
+applyEdgeFade(mastered, 8);
         const totalChars = Math.max(
           1,
           group.reduce((sum, s) => sum + (String(s.subtitle || "").length || 0), 0)
@@ -871,27 +872,48 @@ for (let idx = 0; idx < group.length; idx++) {
   const s = group[idx];
   const textLen = String(s.subtitle || "").length || 0;
 
-  const segDur =
-    idx === group.length - 1
-      ? Math.max(0, buffer.duration - cursorSec)
-      : Math.max(0, (buffer.duration * textLen) / totalChars);
+const idealDur =
+  idx === group.length - 1
+    ? mastered.duration - cursorSec
+    : (mastered.duration * textLen) / totalChars;
 
-  const start = Math.max(0, cursorSec);
-  const end = Math.max(start, Math.min(buffer.duration, start + segDur));
+  const idealEnd = cursorSec + idealDur;
 
-  const startSample = Math.floor(start * buffer.sampleRate);
-  const endSample = Math.floor(end * buffer.sampleRate);
+const sr = mastered.sampleRate;
+const data = mastered.getChannelData(0);
+
+  const target = Math.floor(idealEnd * sr);
+  const search = Math.floor(0.12 * sr); // ±120ms
+  let best = target;
+  let bestVal = 1e9;
+
+  for (let i = Math.max(1, target - search); i < Math.min(data.length - 1, target + search); i++) {
+    const v = Math.abs(data[i]);
+    if (v < bestVal) {
+      bestVal = v;
+      best = i;
+    }
+  }
+
+  const cutTime = best / sr;
+
+const start = Math.max(0, cursorSec);
+const end = Math.max(start, Math.min(mastered.duration, cutTime));
+
+
+const startSample = Math.floor(start * mastered.sampleRate);
+const endSample = Math.floor(end * mastered.sampleRate);
   const frameCount = Math.max(1, endSample - startSample);
 
-  const slice = ctx.createBuffer(
-    buffer.numberOfChannels,
-    frameCount,
-    buffer.sampleRate
-  );
+const slice = ctx.createBuffer(
+  mastered.numberOfChannels,
+  frameCount,
+  mastered.sampleRate
+);
 
-  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
-    const src = buffer.getChannelData(ch);
-    const dst = slice.getChannelData(ch);
+for (let ch = 0; ch < mastered.numberOfChannels; ch++) {
+  const src = mastered.getChannelData(ch);
+  const dst = slice.getChannelData(ch);
 
     for (let i = 0; i < frameCount; i++) {
       const si = startSample + i;
@@ -899,11 +921,9 @@ for (let idx = 0; idx < group.length; idx++) {
     }
   }
 
-const masteredSlice = await applyMastering(slice);
-applyEdgeFade(masteredSlice, 8);
-
-onProgress(s.id, masteredSlice);
+onProgress(s.id, slice);
 cursorSec = end;
+
 }
 
       } catch (e: any) {

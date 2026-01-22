@@ -256,10 +256,8 @@ const postProcessSceneAudioInPlace = (buf: AudioBuffer | null | undefined) => {
   if (!buf) return;
   try {
     removeDcOffsetInPlace(buf);
-    applyFadeInOutInPlace(buf, 8);
-  } catch {
-    // 후처리는 실패해도 앱이 멈추면 안 되므로 조용히 무시
-  }
+    // ❌ 씬 단위 페이드 완전 제거 (crossfade 깨짐 원인)
+  } catch {}
 };
 
 
@@ -509,8 +507,8 @@ useEffect(() => {
       // ✅ gap 삽입 (기본값 0이라 out.set 필요 없음)
       if (!isLast) offset += SCENE_GAP_SAMPLES;
     });
-
-    return finalBuffer;
+applyFadeInOutInPlace(finalBuffer, 12);
+return finalBuffer;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.scenes]);
 
@@ -951,9 +949,7 @@ try {
     audioCtx
   );
 
-  audioBuf = trimSilenceInPlace(audioBuf);
-
-  postProcessSceneAudioInPlace(audioBuf);
+audioBuf = trimSilenceInPlace(audioBuf);
 
   setState(p => ({
     ...p,
@@ -1038,10 +1034,8 @@ const processBreathGroupAudio = async (breathKey: string) => {
       stateRef.current.voiceSpeed,
       stateRef.current.voicePitch,
       audioCtx,
-      (id, buffer) => {
-        postProcessSceneAudioInPlace(buffer);
-
-        setState(p => ({
+(id, buffer) => {
+  setState(p => ({
           ...p,
           scenes: p.scenes.map(sc =>
             sc.id === id
@@ -1538,7 +1532,72 @@ if (isPlaying) {
   requestRef.current = requestAnimationFrame(frame);
 };
 
-// ⛔ 위 함수를 아래로 통째로 교체
+const deleteScene = (id: string) => {
+  pushToHistory();
+
+  const scenes = stateRef.current.scenes;
+  const idx = scenes.findIndex(s => s.id === id);
+  if (idx === -1) return;
+
+  const nextScenes = scenes.filter(s => s.id !== id);
+
+  setState(p => ({ ...p, scenes: nextScenes }));
+
+  // 🔥 삭제 후 선택할 씬 계산 (바로 위, 없으면 아래)
+  let nextIndex = idx - 1;
+  if (nextIndex < 0) nextIndex = 0;
+  if (nextIndex >= nextScenes.length) nextIndex = nextScenes.length - 1;
+
+  const nextScene = nextScenes[nextIndex];
+
+  if (nextScene) {
+    const entry = sceneTimeline.find(e => e.scene.id === nextScene.id);
+    if (entry) {
+      previewTimeRef.current = entry.start;
+      currentTimeRef.current = entry.start;
+      setCurrentTime(entry.start);
+    }
+  }
+
+  setIsBreathEditing(false);
+  setActiveBreathKey(null);
+  setBreathEditText("");
+  breathEditTextRef.current = "";
+};
+
+const handleAddScene = () => {
+  pushToHistory();
+
+  const targetScene = currentScene || state.scenes[state.scenes.length - 1];
+  if (!targetScene) return;
+
+  const index = state.scenes.findIndex(s => s.id === targetScene.id);
+  if (index === -1) return;
+
+  const newScene: Scene = {
+    id: `s-man-${Date.now()}`,
+    visualGroupId: targetScene.visualGroupId || 'man',
+    visualPrompt: '',
+    subtitle: '새 장면 내용을 입력하세요.',
+    status: 'pending',
+    isHeader: false,
+    estimatedDurationSeconds: 5
+  };
+
+  const newScenes = [...state.scenes];
+  newScenes.splice(index + 1, 0, newScene);
+
+  setState(p => ({ ...p, scenes: newScenes }));
+
+  // 🔥 새로 만든 씬을 즉시 선택
+  requestAnimationFrame(() => {
+    const newIndex = index + 1;
+    const t = sceneTimeline[newIndex]?.start ?? 0;
+    handleSeek(t);
+  });
+};
+
+
 const handleSeek = async (time: number) => {
   // 🔥 묶음 편집 강제 해제
   if (isBreathEditing) {
@@ -1565,29 +1624,8 @@ breathEditTextRef.current = "";
 
 
 
-  const handleAddScene = () => {    
-  pushToHistory();
-    const targetScene = currentScene || state.scenes[state.scenes.length - 1];
-    if (!targetScene) return;
 
-    const index = state.scenes.findIndex(s => s.id === targetScene.id);
-    if (index === -1) return;
 
-    const newScene: Scene = {
-      id: `s-man-${Date.now()}`,
-      visualGroupId: targetScene.visualGroupId || 'man',
-      visualPrompt: '',
-      subtitle: '새 장면 내용을 입력하세요.',
-      status: 'pending',
-      isHeader: false,
-      estimatedDurationSeconds: 5
-    };
-
-    const newScenes = [...state.scenes];
-    newScenes.splice(index + 1, 0, newScene);
-    setState(p => ({ ...p, scenes: newScenes }));
- 
-};
   const handleAddHeader = () => {
      pushToHistory(); 
     const targetScene = currentScene || state.scenes[state.scenes.length - 1];
@@ -2097,6 +2135,7 @@ breathEditTextRef.current = "";
           index={i}
           metadata={state.metadata}
           getBreathKey={() => null}
+          onDeleteScene={deleteScene}
           onRegenerateBreathGroup={(key) => {
             setActiveBreathKey(key);
             processBreathGroupAudio(key);
@@ -2169,6 +2208,7 @@ breathEditTextRef.current = "";
           index={i}
           metadata={state.metadata}
           getBreathKey={() => (!s.isHeader ? String((s as any).breathId ?? "") : null)}
+          onDeleteScene={deleteScene}
           onRegenerateBreathGroup={(key) => {
             setActiveBreathKey(key);
             processBreathGroupAudio(key);
@@ -2239,6 +2279,7 @@ breathEditTextRef.current = "";
           index={i}
           metadata={state.metadata}
           getBreathKey={() => (!s.isHeader ? String((s as any).breathId ?? "") : null)}
+            onDeleteScene={deleteScene}
           onRegenerateBreathGroup={(key) => {
             setActiveBreathKey(key);
             processBreathGroupAudio(key);
@@ -2325,6 +2366,7 @@ breathEditTextRef.current = "";
                 index={i}
                 metadata={state.metadata}
                 getBreathKey={() => (!gs.isHeader ? String((gs as any).breathId ?? "") : null)}
+                onDeleteScene={deleteScene}
                 onRegenerateBreathGroup={(key) => {
                   setActiveBreathKey(key);
                   processBreathGroupAudio(key);
