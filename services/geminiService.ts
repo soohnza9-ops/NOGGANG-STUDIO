@@ -176,7 +176,7 @@ export async function applyMastering(buffer: AudioBuffer): Promise<AudioBuffer> 
   compressor.release.setValueAtTime(0.25, offlineCtx.currentTime);
 
   const gain = offlineCtx.createGain();
-  gain.gain.setValueAtTime(1.15, offlineCtx.currentTime);
+gain.gain.setValueAtTime(0.9, offlineCtx.currentTime);
 
   source.connect(compressor);
   compressor.connect(gain);
@@ -303,6 +303,19 @@ ${combinedPrompt}
       const data = JSON.parse(text);
 
       const world = data.world || { characters: [], locations: [], objects: [] };
+      // ✅ 영상 제목을 오늘 날짜로 강제 (YYYYMMDD)
+const today = new Date();
+const y = today.getFullYear();
+const m = String(today.getMonth() + 1).padStart(2, "0");
+const d = String(today.getDate()).padStart(2, "0");
+const dateTitle = `${y}${m}${d}`;
+
+data.metadata = {
+  title: dateTitle,
+  subject: dateTitle,
+  storyContext: data.metadata?.storyContext || ""
+};
+
 
 
     // 2) 코드로 장면 분할 (자막=글자수 / TTS=호흡 단위)
@@ -588,7 +601,11 @@ for (let breathId = 0; breathId < breaths.length; breathId++) {
 
 const generateVisualPromptForScene = async (
   sceneSubtitle: string,
-  fullScript: string
+  fullScript: string,
+  storyContext: string,
+  characters: string[],
+  locations: string[],
+  objects: string[]
 ): Promise<string> => {
   const res: GenerateContentResponse = await withRetry(() =>
     ai.models.generateContent({
@@ -596,11 +613,19 @@ const generateVisualPromptForScene = async (
       contents: `
 너는 영상 제작용 이미지 프롬프트를 생성한다.
 
+[세계관 요약]
+${storyContext}
+
+등장인물: ${characters.join(", ")}
+장소: ${locations.join(", ")}
+소품: ${objects.join(", ")}
+
 [전체 대본]
 ${fullScript}
 
 [현재 장면 대사]
 ${sceneSubtitle}
+
 
 규칙:
 - 인물/배경/행동 여부는 **너가 판단**한다.
@@ -637,7 +662,15 @@ ${combinedPrompt}
             continue;
           }
 
-         const p = await generateVisualPromptForScene(s.subtitle, script);
+         const p = await generateVisualPromptForScene(
+  s.subtitle,
+  script,
+  data.metadata.storyContext || "",
+  world.characters || [],
+  world.locations || [],
+  world.objects || []
+);
+
           vpResults[i] = p;
         }
       };

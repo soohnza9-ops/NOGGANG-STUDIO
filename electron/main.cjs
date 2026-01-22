@@ -28,27 +28,30 @@ function createWindow() {
 
  }
 
-ipcMain.handle('export:chooseDir', async (event) => {
+ipcMain.handle('export:chooseFile', async (event, { defaultTitle }) => {
   const win = BrowserWindow.fromWebContents(event.sender);
 
   let defaultPath = undefined;
   try {
     if (fs.existsSync(STORE_PATH)) {
       const saved = JSON.parse(fs.readFileSync(STORE_PATH, 'utf8'));
-      if (saved?.lastDir) defaultPath = saved.lastDir;
+      if (saved?.lastDir) defaultPath = path.join(saved.lastDir, `${defaultTitle || 'video'}.mp4`);
     }
   } catch {}
 
-  const result = await dialog.showOpenDialog(win, {
-    properties: ['openDirectory'],
+  const result = await dialog.showSaveDialog(win, {
+    title: '영상 저장',
     defaultPath,
+    filters: [
+      { name: 'MP4 Video', extensions: ['mp4'] }
+    ],
   });
 
-  if (!result.canceled && result.filePaths?.[0]) {
+  if (!result.canceled && result.filePath) {
     try {
       fs.writeFileSync(
         STORE_PATH,
-        JSON.stringify({ lastDir: result.filePaths[0] }, null, 2),
+        JSON.stringify({ lastDir: path.dirname(result.filePath) }, null, 2),
         'utf8'
       );
     } catch {}
@@ -56,23 +59,25 @@ ipcMain.handle('export:chooseDir', async (event) => {
 
   return {
     canceled: result.canceled,
-    dirPath: result.filePaths?.[0] ?? null,
+    filePath: result.filePath ?? null,
   };
 });
 
 
 
-ipcMain.handle('export:begin', async (e, { width, height, fps, totalFrames, title, outputDir }) => {
+
+ipcMain.handle('export:begin', async (e, { width, height, fps, totalFrames, title, outputPath }) => {
+
   const jobId = Date.now().toString();
   const dir = path.join(os.tmpdir(), `noggang_${jobId}`);
   fs.mkdirSync(dir, { recursive: true });
 
-  jobs.set(jobId, {
-    dir,
-    fps,
-    title,
-    outputDir,
-  });
+jobs.set(jobId, {
+  dir,
+  fps,
+  title,
+  outputPath,
+});
 
   return { jobId };
 });
@@ -97,24 +102,30 @@ ipcMain.handle('export:finalize', async (e, { jobId }) => {
   const job = jobs.get(jobId);
   if (!job) throw new Error('job not found');
 
-const outPath = path.join(job.outputDir, `${job.title}.mp4`);
+const outPath = job.outputPath;
 
   await new Promise((res, rej) => {
     execFile(
   'ffmpeg',
-  [
-    '-y',
-    '-framerate', String(job.fps),
-    '-f', 'image2',
-    '-start_number', '1',
-    '-i', path.join(job.dir, '%06d.jpg'),
-    '-i', path.join(job.dir, 'audio.wav'),
-    '-c:v', 'libx264',
-    '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac',
-    '-shortest',
-    outPath,
-  ],
+[
+  '-y',
+  '-framerate', String(job.fps),
+  '-f', 'image2',
+  '-start_number', '1',
+  '-i', path.join(job.dir, '%06d.jpg'),
+  '-i', path.join(job.dir, 'audio.wav'),
+  '-c:v', 'libx264',
+  '-pix_fmt', 'yuv420p',
+
+  // 🔥 오디오 절대 손상 방지
+'-c:a', 'aac',
+'-b:a', '192k',
+'-ar', '48000',
+'-ac', '2',
+'-shortest',
+outPath,
+
+],
 
       (err) => (err ? rej(err) : res())
     );

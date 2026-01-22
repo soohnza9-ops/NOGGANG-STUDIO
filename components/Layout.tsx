@@ -32,7 +32,7 @@ const TOOLS: Tool[] = [
 
 const Layout: React.FC = () => {
   const location = useLocation();
-
+const isEditor = location.pathname.startsWith("/app");
 
   // 홈은 기본 열림, /app은 기본 닫힘 (하지만 홈에서도 토글 가능)
 const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
@@ -51,8 +51,8 @@ useEffect(() => {
 
   return (
     <div className="min-h-screen bg-black text-white">
-      {/* Header (항상) */}
-      <Header />
+      {/* Header (편집화면에서는 숨김) */}
+{!isEditor && <Header />}
 
       {/* 아래 전체 레이아웃 */}
      <div className="flex min-h-screen">
@@ -164,7 +164,7 @@ useEffect(() => {
         </aside>
 
         {/* Main content */}
-       <main className="pt-16 flex-1 min-w-0">
+       <main className={`${isEditor ? "pt-0" : "pt-16"} flex-1 min-w-0`}>
           <Outlet />
         </main>
       </div>

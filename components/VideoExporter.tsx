@@ -5,8 +5,7 @@ import { VideoSettings, YouTubeMetadata, SceneTimelineEntry } from '../types';
 
 import { Loader2, AlertCircle, Download, AlertTriangle, X } from 'lucide-react';
 type ElectronExportAPI = {
- 
-  chooseExportDir: () => Promise<{ canceled: boolean; dirPath: string | null }>;
+  chooseExportFile: (defaultTitle: string) => Promise<{ canceled: boolean; filePath: string | null }>;
 
   exportBegin: (args: {
     width: number;
@@ -14,7 +13,7 @@ type ElectronExportAPI = {
     fps: number;
     totalFrames: number;
     title: string;
-    outputDir: string;
+    outputPath: string;
   }) => Promise<{ jobId: string }>;
 
   exportWriteFrame: (args: { jobId: string; frameIndex: number; pngBytes: Uint8Array }) => Promise<void>;
@@ -22,6 +21,7 @@ type ElectronExportAPI = {
   exportFinalize: (args: { jobId: string }) => Promise<{ outputPath: string }>;
   exportCancel: (args: { jobId: string }) => Promise<void>;
 };
+
 
 
 declare global {
@@ -40,6 +40,7 @@ const VideoExporter: React.FC<{
   disabled: boolean;
   fullSpeechAudioBuffer: AudioBuffer | null;
   sceneTimeline: SceneTimelineEntry[];
+  scenes: import('../types').Scene[];
   assetStatus: 'ready' | 'pending';
   isExporting: boolean;
   setIsExporting: (v: boolean) => void;
@@ -53,9 +54,10 @@ const VideoExporter: React.FC<{
   bgmUrl,
   bgmVolume,
   metadata,
-  fullSpeechAudioBuffer,
-  sceneTimeline,
-  isExporting,
+fullSpeechAudioBuffer,
+sceneTimeline,
+scenes,
+isExporting,
   setIsExporting,
   onDownloadAllAssets,
   isZipping,
@@ -288,22 +290,7 @@ const target = dur * ratio;
 
   const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-  const linearResample = (src: Float32Array, srcSR: number, dstSR: number) => {
-    if (srcSR === dstSR) return src;
-    const ratio = dstSR / srcSR;
-    const dstLen = Math.max(1, Math.round(src.length * ratio));
-    const dst = new Float32Array(dstLen);
-    for (let i = 0; i < dstLen; i++) {
-      const s = i / ratio;
-      const i0 = Math.floor(s);
-      const i1 = Math.min(i0 + 1, src.length - 1);
-      const frac = s - i0;
-      const a = src[i0] ?? 0;
-      const b = src[i1] ?? 0;
-      dst[i] = a * (1 - frac) + b * frac;
-    }
-    return dst;
-  };
+
 
   const encodeWavMonoF32ToS16PCM = (samples: Float32Array, sampleRate: number) => {
     const numChannels = 1;
@@ -347,67 +334,84 @@ const target = dur * ratio;
     return new Uint8Array(buffer);
   };
 
-  const mixSpeechAndBgmToWav = async (totalDuration: number) => {
-    const dstSR = 48000;
-    const totalSamples = Math.max(1, Math.round(totalDuration * dstSR));
-    const out = new Float32Array(totalSamples);
+const mixSpeechAndBgmToWav = async (totalDuration: number) => {
+  const dstSR = 48000;
+  const endT = Math.max(0.001, totalDuration);
+  const totalFrames = Math.max(1, Math.round(endT * dstSR));
+  const offline = new OfflineAudioContext(1, totalFrames, dstSR);
 
-    if (fullSpeechAudioBuffer) {
-      const s0 = fullSpeechAudioBuffer.getChannelData(0);
-      const speech = new Float32Array(s0.length);
-      speech.set(s0);
-      const sRes = linearResample(speech, fullSpeechAudioBuffer.sampleRate || 24000, dstSR);
+  // =================== SAFE MASTER CHAIN ===================
 
-      const n = Math.min(out.length, sRes.length);
-      for (let i = 0; i < n; i++) out[i] += sRes[i] * 1.0;
-    }
 
-    if (bgmUrl) {
-      try {
-        const res = await fetch(bgmUrl);
-        if (res.ok) {
-          const arrayBuf = await res.arrayBuffer();
-          const tempCtx = new AudioContext();
-          const decoded = await tempCtx.decodeAudioData(arrayBuf);
+// ===== CLEAN MIX BUS (no EQ, no compressor, no coloring) =====
+const mixBus = offline.createGain();
+mixBus.gain.value = 1.0;   // TTS + BGM 합산 여유
 
-          const ch0 = decoded.getChannelData(0);
-          const bgm = new Float32Array(ch0.length);
-          bgm.set(ch0);
+mixBus.connect(offline.destination);
 
-          const bRes = linearResample(bgm, decoded.sampleRate || 44100, dstSR);
 
-          if (bRes.length > 0) {
-            const fadeIn = dstSR * 1;
-            const fadeOut = dstSR * 2;
+  // ---------------- Speech ----------------
+  if (fullSpeechAudioBuffer) {
+    const src = offline.createBufferSource();
+    src.buffer = fullSpeechAudioBuffer;
 
-            for (let i = 0; i < out.length; i++) {
-              const bi = i % bRes.length;
-              let vol = (bgmVolume || 0) * 2.05;
-              if (i < fadeIn) vol *= i / fadeIn;
-              if (i > out.length - fadeOut) vol *= (out.length - i) / fadeOut;
-              out[i] += bRes[bi] * vol;
-            }
-          }
+    const g = offline.createGain();
+    g.gain.value = 1.0;
 
-          tempCtx.close();
-        }
-      } catch {}
-    }
+    src.connect(g);
+    g.connect(mixBus);
 
-    const limitT = 0.82;
-    const ceiling = 0.99;
-    for (let i = 0; i < out.length; i++) {
-      let s = out[i];
-      const absS = Math.abs(s);
-      if (absS > limitT) {
-        const over = absS - limitT;
-        s = Math.sign(s) * (limitT + over / (1 + over * 2.5));
+    src.start(0);
+    // 안전: 버퍼가 endT보다 길면 잘라서 stop
+    src.stop(endT);
+  }
+
+  // ---------------- BGM ----------------
+  if (bgmUrl) {
+    try {
+      const res = await fetch(bgmUrl);
+      if (res.ok) {
+        const buf = await res.arrayBuffer();
+        const decoded = await offline.decodeAudioData(buf.slice(0));
+
+        const bgm = offline.createBufferSource();
+        bgm.buffer = decoded;
+        bgm.loop = true;
+
+        const g = offline.createGain();
+const baseVol = Math.max(0, bgmVolume || 0) * 1.25;
+        g.gain.setValueAtTime(0, 0);
+
+        const fadeIn = 1.0;
+        const fadeOut = 2.0;
+
+        g.gain.linearRampToValueAtTime(baseVol, fadeIn);
+        g.gain.setValueAtTime(baseVol, Math.max(0, endT - fadeOut));
+        g.gain.linearRampToValueAtTime(0, endT);
+
+        bgm.connect(g);
+        g.connect(mixBus);
+
+        bgm.start(0);
+        bgm.stop(endT);
       }
-      out[i] = clamp(s, -ceiling, ceiling);
-    }
+    } catch {}
+  }
 
-    return encodeWavMonoF32ToS16PCM(out, dstSR);
-  };
+  const rendered = await offline.startRendering();
+  const data = rendered.getChannelData(0);
+
+  const samples = new Float32Array(data.length);
+  samples.set(data);
+
+// 클리핑 방지용 간단한 clamp만 적용
+for (let i = 0; i < samples.length; i++) {
+  if (samples[i] > 0.98) samples[i] = 0.98;
+  else if (samples[i] < -0.98) samples[i] = -0.98;
+}
+
+return encodeWavMonoF32ToS16PCM(samples, dstSR);
+};
 
   const drawCover = (
     ctx: CanvasRenderingContext2D,
@@ -435,21 +439,25 @@ const target = dur * ratio;
     ctx.drawImage(bmp, oX, oY, dW, dH);
   };
 
-  const renderFrame = async (
-    ctx: CanvasRenderingContext2D,
-    w: number,
-    h: number,
-    t: number,
-    timeline: SceneTimelineEntry[],
-    settings2: VideoSettings
-  ) => {
+const renderFrame = async (
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  timeline: SceneTimelineEntry[],
+  scenes: import('../types').Scene[],
+  settings2: VideoSettings
+) => {
+
     ctx.fillStyle = 'black';
     ctx.fillRect(0, 0, w, h);
 
-    const entry = timeline.find((e) => !e.scene?.isHeader && t >= e.start && t < e.end) || timeline[0];
+const entry = timeline.find((e) => t >= e.start && t < e.end) || timeline[0];
+const scene = entry.scene;
 
-    const url = entry?.scene?.imageUrl || null;
-    const isVideo = entry?.scene?.userAssetType === 'video';
+
+const url = scene?.imageUrl || null;
+const isVideo = scene?.userAssetType === 'video';
 
     if (url && !url.startsWith('data:image/svg')) {
       if (isVideo) {
@@ -477,10 +485,14 @@ const target = dur * ratio;
 
     // 상단 헤더(누적)
     ctx.save();
-    let activeHeader = '';
-    for (const ent of timeline) {
-      if (ent.start <= t && ent.scene?.isHeader) activeHeader = ent.scene.subtitle || '';
-    }
+let activeHeader = '';
+for (const ent of timeline) {
+  if (ent.start <= t && ent.scene?.isHeader) {
+    activeHeader = ent.scene.subtitle || '';
+  }
+}
+
+
     if (activeHeader) {
       const fs = w * 0.028;
       ctx.font = `900 ${fs}px 'Noto Sans KR', sans-serif`;
@@ -491,7 +503,7 @@ const target = dur * ratio;
     }
 
     // 하단 자막
-    if (!entry?.scene?.isHeader) {
+if (!scene?.isHeader) {
       const ratioMap =
         settings2.aspectRatio === '16:9'
           ? { S: 0.03, M: 0.045, L: 0.055 }
@@ -512,7 +524,7 @@ const target = dur * ratio;
 
     // ✅ 장면에서 이미 확정된 줄바꿈 그대로 사용 (미리보기와 100% 동일)
 // ✅ 미리보기와 동일한 줄 계산 로직 적용
-const rawSubtitle = String(entry?.scene?.subtitle || '')
+const rawSubtitle = String(scene?.subtitle || '')
   .replace(/\r/g, '')
   .trim();
 
@@ -610,10 +622,13 @@ const handleExport = async () => {
     return;
   }
 
-  const picked = await window.NOGGANG_EXPORT.chooseExportDir();
-  if (picked.canceled || !picked.dirPath) return;
+const title = metadata?.title || 'video';
 
-  const outputDir = picked.dirPath;
+const picked = await window.NOGGANG_EXPORT.chooseExportFile(title);
+if (picked.canceled || !picked.filePath) return;
+
+const outputPath = picked.filePath;
+
 
   cancelRef.current = false;
   setIsExporting(true);
@@ -642,16 +657,15 @@ const handleExport = async () => {
     const fps = 24;
     const totalFrames = Math.ceil(totalDuration * fps);
 
-    const title = metadata?.title || 'video';
+const begin = await window.NOGGANG_EXPORT.exportBegin({
+  width: w,
+  height: h,
+  fps,
+  totalFrames,
+  title,
+  outputPath
+});
 
-    const begin = await window.NOGGANG_EXPORT.exportBegin({
-      width: w,
-      height: h,
-      fps,
-      totalFrames,
-      title,
-      outputDir
-    });
 
     jobIdRef.current = begin.jobId;
 
@@ -667,7 +681,7 @@ const handleExport = async () => {
       if (cancelRef.current) break;
 
       const t = f / fps;
-      await renderFrame(ctx, w, h, t, sceneTimeline, settings);
+await renderFrame(ctx, w, h, t, sceneTimeline, scenes, settings);
 
       const pngBytes = await new Promise<Uint8Array>((resolve, reject) => {
         canvas.toBlob(
