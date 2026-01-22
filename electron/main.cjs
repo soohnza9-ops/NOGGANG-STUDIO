@@ -36,11 +36,16 @@ function createWindow() {
 
   const isDev = !app.isPackaged;
 
-  if (isDev) {
-    win.loadURL("http://localhost:3000");
-  } else {
-win.loadFile(path.join(__dirname, "../dist/index.html"));
-  }
+if (isDev) {
+  win.loadURL("http://localhost:3000");
+} else {
+  const indexUrl = new URL(
+    "../dist/index.html",
+    `file://${__dirname}/`
+  ).toString();
+  win.loadURL(indexUrl);
+}
+
 }
 
 ipcMain.handle('export:chooseFile', async (event, { defaultTitle }) => {
