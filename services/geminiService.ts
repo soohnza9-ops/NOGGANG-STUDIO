@@ -467,12 +467,10 @@ function makeSceneSmart(text: string, breathId: number, startSec: number, endSec
     visualPrompt: "",
     status: "pending",
     isHeader: isHeaderSubtitle(trimmed),
-    syncOffset: 0,
-    breathId,
-    audioStart: startSec,
-    audioEnd: endSec
-  } as any;
+    breathId
+  } as Scene;
 }
+
 
 
 const scenes: Scene[] = [];
@@ -797,13 +795,7 @@ voice: {
   // ✅ 샘플레이트 24000으로 맞추기
   const srFixed = await ensureSampleRate(decoded, 24000);
 
-  // ✅ 마스터링
-  const mastered = await applyMastering(srFixed);
-
-  // ✅ 클릭/틱 제거: 8ms
-  applyEdgeFade(mastered, 8);
-
-  return mastered;
+return srFixed;
 };
 
 export const generateAudioBatch = async (
@@ -814,7 +806,8 @@ export const generateAudioBatch = async (
   pitch: number,
   ctx: AudioContext,
   onProgress: (id: string, buffer: AudioBuffer) => void,
-  onError: (id: string, error: string) => void
+  onError: (id: string, error: string) => void,
+  overrideText?: string
 ) => {
   const CONCURRENCY = 20;
 
@@ -844,10 +837,19 @@ export const generateAudioBatch = async (
       const first = group[0];
 
       try {
-        const fullText = group.map(s => s.subtitle).join(" ").replace(/\s+/g, " ").trim();
+        const builtText = Array.from(
+          new Set(group.map(s => String(s.subtitle || "").trim()).filter(Boolean))
+        )
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
 
-        const fakeScene = { ...(first as any), subtitle: fullText } as Scene;
+        const finalText = String(overrideText ?? builtText)
+          .replace(/\r?\n+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
 
+        const fakeScene = { ...(first as any), subtitle: finalText } as Scene;
 
         const buffer = await generateSingleAudio(
           apiKey,
@@ -858,13 +860,10 @@ export const generateAudioBatch = async (
           ctx
         );
 
-// ✅ 아래 "for (const s of group) { ... }" 이 블록을 통째로 삭제하고
-// ✅ 아래 블록으로 그대로 교체
-
-const totalChars = Math.max(
-  1,
-  group.reduce((sum, s) => sum + (String(s.subtitle || "").length || 0), 0)
-);
+        const totalChars = Math.max(
+          1,
+          group.reduce((sum, s) => sum + (String(s.subtitle || "").length || 0), 0)
+        );
 
 let cursorSec = 0;
 
@@ -900,18 +899,16 @@ for (let idx = 0; idx < group.length; idx++) {
     }
   }
 
-  onProgress(s.id, slice);
+const masteredSlice = await applyMastering(slice);
+applyEdgeFade(masteredSlice, 8);
 
-  cursorSec = end;
+onProgress(s.id, masteredSlice);
+cursorSec = end;
 }
-
-
 
       } catch (e: any) {
         const msg = e?.message || String(e);
-        for (const s of group) {
-          onError(s.id, msg);
-        }
+        for (const s of group) onError(s.id, msg);
       }
     }
   };
@@ -923,6 +920,7 @@ for (let idx = 0; idx < group.length; idx++) {
 
   await Promise.all(workers);
 };
+
 
 export const generateSceneImage = async (
   apiKey: string,

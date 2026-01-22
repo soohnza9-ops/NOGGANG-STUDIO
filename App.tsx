@@ -326,7 +326,7 @@ const App: React.FC = () => {
 const [activeBreathKey, setActiveBreathKey] = useState<string | null>(null);
 const [breathEditText, setBreathEditText] = useState<string>("");
 const [isBreathEditing, setIsBreathEditing] = useState<boolean>(false);
-
+const breathEditTextRef = useRef<string>("");
 const [isExporting, setIsExporting] = useState(false);
 const [currentTime, setCurrentTime] = useState(0);
 const [isZipping, setIsZipping] = useState(false);
@@ -873,20 +873,48 @@ useEffect(() => {
   const updateSubtitle = (id: string, sub: string) => {
     setState(p => ({ ...p, scenes: p.scenes.map(sc => sc.id === id ? { ...sc, subtitle: sub } : sc) }));
   };
-  const updateBreathGroupSubtitle = (breathKey: string, text: string) => {
-  const breathIdNum = Number(breathKey);
-  if (!Number.isFinite(breathIdNum)) return;
+const updateBreathGroupSubtitle = (breathKey: string, text: string) => {
+  const normalized = String(text ?? "")
+    .replace(/\r/g, "")
+    .trim();
 
-  setState(p => ({
-    ...p,
-    scenes: p.scenes.map(sc => {
-      if (sc.isHeader) return sc;
-      const bid = Number((sc as any).breathId ?? -9999);
-      if (bid !== breathIdNum) return sc;
-      return { ...sc, subtitle: text };
-    })
-  }));
+  // 1) 편집창 텍스트 유지 (즉시 반영용 ref 포함)
+  breathEditTextRef.current = normalized;
+  setBreathEditText(normalized);
+
+  // 2) 실제 화면 자막(Scene.subtitle)도 갱신
+  setState(p => {
+    const groupScenes = p.scenes.filter(
+      s => !s.isHeader && String((s as any).breathId ?? "") === breathKey
+    );
+
+    if (groupScenes.length === 0) return p;
+
+    const lines = normalized
+      .split("\n")
+      .map(v => v.trim())
+      .filter(Boolean);
+
+    // lines 수가 씬 수와 같으면 1:1로 배분, 아니면 전체를 동일하게 적용
+    const usePerScene = lines.length === groupScenes.length;
+
+    const idToText = new Map<string, string>();
+    groupScenes.forEach((gs, idx) => {
+      idToText.set(gs.id, usePerScene ? lines[idx] : normalized);
+    });
+
+    return {
+      ...p,
+      scenes: p.scenes.map(sc =>
+        idToText.has(sc.id)
+          ? { ...sc, subtitle: idToText.get(sc.id)! }
+          : sc
+      )
+    };
+  });
 };
+
+
 
   const updateVisualPrompt = (id: string, vp: string) => {
     setState(p => ({ ...p, scenes: p.scenes.map(sc => sc.id === id ? { ...sc, visualPrompt: vp } : sc) }));
@@ -975,9 +1003,10 @@ const processBreathGroupAudio = async (breathKey: string) => {
 
   const breathIdNum = Number(breathKey);
   if (!Number.isFinite(breathIdNum)) return;
-const targetScenes = stateRef.current.scenes.filter(
-  s => !s.isHeader && String((s as any).breathId ?? "") === breathKey
-);
+
+  const targetScenes = stateRef.current.scenes.filter(
+    s => !s.isHeader && String((s as any).breathId ?? "") === breathKey
+  );
 
   if (targetScenes.length === 0) return;
 
@@ -994,7 +1023,14 @@ const targetScenes = stateRef.current.scenes.filter(
 
   try {
     if (audioCtx.state === 'suspended') await audioCtx.resume();
-if (targetScenes.length === 0) return;
+    if (targetScenes.length === 0) return;
+
+    const override = String(breathEditTextRef.current || "")
+  .replace(/\r?\n+/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+
     await generateAudioBatch(
       API_KEY!,
       targetScenes,
@@ -1009,7 +1045,12 @@ if (targetScenes.length === 0) return;
           ...p,
           scenes: p.scenes.map(sc =>
             sc.id === id
-              ? { ...sc, audioBuffer: buffer, status: sc.imageUrl ? 'completed' : 'generating', errorMessage: undefined }
+              ? {
+                  ...sc,
+                  audioBuffer: buffer,
+                  status: sc.imageUrl ? 'completed' : 'generating',
+                  errorMessage: undefined
+                }
               : sc
           )
         }));
@@ -1021,12 +1062,14 @@ if (targetScenes.length === 0) return;
             sc.id === id ? { ...sc, status: 'error', errorMessage: error } : sc
           )
         }));
-      }
+      },
+      override
     );
   } finally {
     try { await audioCtx.close(); } catch {}
   }
 };
+
 
 const processFullBatch = async (type: 'image' | 'audio' | 'all' = 'all') => {
   
@@ -1433,11 +1476,24 @@ if (audioCtxRef.current.state === 'suspended') {
 const togglePreview = async () => {
   if (stats.readyAudio === 0) return;
 
-  if (isPlaying) {
-    stopPreview();
-    return;
-  }
+if (isPlaying) {
+  stopPreview();
 
+  // 🔥 오디오 편집 모드 강제 해제
+  setIsBreathEditing(false);
+  setActiveBreathKey(null);
+  setBreathEditText("");
+  breathEditTextRef.current = "";
+
+  return;
+}
+
+  if (isBreathEditing) {
+    setIsBreathEditing(false);
+    setActiveBreathKey(null);
+    setBreathEditText("");
+    breathEditTextRef.current = "";
+  }
  const startTime =
   currentTimeRef.current >= totalDuration - 0.1
     ? totalDuration
@@ -1482,15 +1538,30 @@ const togglePreview = async () => {
   requestRef.current = requestAnimationFrame(frame);
 };
 
+// ⛔ 위 함수를 아래로 통째로 교체
 const handleSeek = async (time: number) => {
+  // 🔥 묶음 편집 강제 해제
+  if (isBreathEditing) {
+    setIsBreathEditing(false);
+    setActiveBreathKey(null);
+    setBreathEditText("");
+    breathEditTextRef.current = "";
+  }
+
   previewTimeRef.current = time;
+  setIsBreathEditing(false);
+setActiveBreathKey(null);
+setBreathEditText("");
+breathEditTextRef.current = "";
   currentTimeRef.current = time;
   setCurrentTime(time);
+  setIsBreathEditing(false);
 
   if (isPlaying) {
     await startAudioAtTime(time);
   }
 };
+
 
 
 
@@ -1941,7 +2012,16 @@ const handleSeek = async (time: number) => {
               </div>
 
               <div className="bg-zinc-900/80 p-4 rounded-2xl border border-zinc-800 flex items-center gap-4 flex-shrink-0">
-                <button onClick={togglePreview} className="p-4 rounded-full bg-yellow-400 text-black active:scale-90 transition-all">
+               <button
+  onClick={() => {
+    setIsBreathEditing(false);
+    setActiveBreathKey(null);
+    setBreathEditText("");
+    breathEditTextRef.current = "";
+    togglePreview();
+  }}
+  className="p-4 rounded-full bg-yellow-400 text-black active:scale-90 transition-all"
+>
                   {isPlaying ? <StopCircle /> : <PlayCircle />}
                 </button>
                 <input
@@ -2022,14 +2102,24 @@ const handleSeek = async (time: number) => {
             processBreathGroupAudio(key);
           }}
           onEnterAudioEditMode={(key) => {
-            setActiveBreathKey(key);
-            const groupText = state.scenes
-              .filter(x => String((x as any).breathId) === key)
-              .map(x => x.subtitle)
-              .join("\n");
-            setBreathEditText(groupText);
-            setIsBreathEditing(true);
-          }}
+  setActiveBreathKey(key);
+
+  const groupScenes = state.scenes.filter(
+    x => !x.isHeader && String((x as any).breathId) === key
+  );
+
+  // 이미 씬들이 동일한 자막으로 망가져 있으면 1개만 사용
+  const unique = Array.from(new Set(groupScenes.map(s => s.subtitle.trim())));
+
+  const groupText =
+    unique.length === 1
+      ? unique[0]
+      : unique.join("\n");
+
+  setBreathEditText(groupText);
+  setIsBreathEditing(true);
+}}
+
           onExitAudioEditMode={() => {
             setActiveBreathKey(null);
             setIsBreathEditing(false);
@@ -2084,14 +2174,24 @@ const handleSeek = async (time: number) => {
             processBreathGroupAudio(key);
           }}
           onEnterAudioEditMode={(key) => {
-            setActiveBreathKey(key);
-            const groupText = state.scenes
-              .filter(x => String((x as any).breathId) === key)
-              .map(x => x.subtitle)
-              .join("\n");
-            setBreathEditText(groupText);
-            setIsBreathEditing(true);
-          }}
+  setActiveBreathKey(key);
+
+  const groupScenes = state.scenes.filter(
+    x => !x.isHeader && String((x as any).breathId) === key
+  );
+
+  // 이미 씬들이 동일한 자막으로 망가져 있으면 1개만 사용
+  const unique = Array.from(new Set(groupScenes.map(s => s.subtitle.trim())));
+
+  const groupText =
+    unique.length === 1
+      ? unique[0]
+      : unique.join("\n");
+
+  setBreathEditText(groupText);
+  setIsBreathEditing(true);
+}}
+
           onExitAudioEditMode={() => {
             setActiveBreathKey(null);
             setIsBreathEditing(false);
@@ -2144,14 +2244,24 @@ const handleSeek = async (time: number) => {
             processBreathGroupAudio(key);
           }}
           onEnterAudioEditMode={(key) => {
-            setActiveBreathKey(key);
-            const groupText = state.scenes
-              .filter(x => String((x as any).breathId) === key)
-              .map(x => x.subtitle)
-              .join("\n");
-            setBreathEditText(groupText);
-            setIsBreathEditing(true);
-          }}
+  setActiveBreathKey(key);
+
+  const groupScenes = state.scenes.filter(
+    x => !x.isHeader && String((x as any).breathId) === key
+  );
+
+  // 이미 씬들이 동일한 자막으로 망가져 있으면 1개만 사용
+  const unique = Array.from(new Set(groupScenes.map(s => s.subtitle.trim())));
+
+  const groupText =
+    unique.length === 1
+      ? unique[0]
+      : unique.join("\n");
+
+  setBreathEditText(groupText);
+  setIsBreathEditing(true);
+}}
+
           onExitAudioEditMode={() => {
             setActiveBreathKey(null);
             setIsBreathEditing(false);
@@ -2168,13 +2278,17 @@ const handleSeek = async (time: number) => {
           }}
           onUpdateVisualPrompt={updateVisualPrompt}
           onClick={() => {
-            // ✅ 편집 모드 닫고, 개별 선택으로 복귀
-            setIsBreathEditing(false);
-            setActiveBreathKey(null);
-            setBreathEditText("");
-            const i2 = state.scenes.findIndex(x => x.id === s.id);
-            handleSeek(sceneTimeline[i2].start);
-          }}
+  // 🔥 묶음 편집 완전 해제
+  setIsBreathEditing(false);
+  setActiveBreathKey(null);
+  setBreathEditText("");
+  breathEditTextRef.current = "";
+
+  // 🔥 해당 씬만 활성화되도록 타임라인 이동
+  const i2 = state.scenes.findIndex(x => x.id === s.id);
+  handleSeek(sceneTimeline[i2].start);
+}}
+
           // ✅ 편집 모드에서는 개별 노란테두리 금지
           isActive={false}
           onRetry={(id) => processSingleAsset(id, "image")}
@@ -2215,15 +2329,25 @@ const handleSeek = async (time: number) => {
                   setActiveBreathKey(key);
                   processBreathGroupAudio(key);
                 }}
-                onEnterAudioEditMode={(key) => {
-                  setActiveBreathKey(key);
-                  const groupText = state.scenes
-                    .filter(x => String((x as any).breathId) === key)
-                    .map(x => x.subtitle)
-                    .join("\n");
-                  setBreathEditText(groupText);
-                  setIsBreathEditing(true);
-                }}
+               onEnterAudioEditMode={(key) => {
+  setActiveBreathKey(key);
+
+  const groupScenes = state.scenes.filter(
+    x => !x.isHeader && String((x as any).breathId) === key
+  );
+
+  // 이미 씬들이 동일한 자막으로 망가져 있으면 1개만 사용
+  const unique = Array.from(new Set(groupScenes.map(s => s.subtitle.trim())));
+
+  const groupText =
+    unique.length === 1
+      ? unique[0]
+      : unique.join("\n");
+
+  setBreathEditText(groupText);
+  setIsBreathEditing(true);
+}}
+
                 onExitAudioEditMode={() => {
                   setActiveBreathKey(null);
                   setIsBreathEditing(false);

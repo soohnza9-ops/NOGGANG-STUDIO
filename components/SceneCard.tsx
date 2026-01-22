@@ -308,7 +308,15 @@ className={`
   transition-all duration-200 cursor-pointer relative rounded-2xl border
   ${scene.isHeader ? 'py-2 px-4 bg-zinc-100 border-zinc-300 shadow-sm z-20' : 'p-3 bg-zinc-900'}
   ${
-!scene.isHeader && isActive && !showAudioEditor && activeBreathKey === null
+!scene.isHeader &&
+(
+  // 단일 씬 활성
+  (isActive && !showAudioEditor && activeBreathKey === null)
+  ||
+  // 묶음 편집 중일 때 해당 breath만 강조
+  (showAudioEditor && activeBreathKey !== null && activeBreathKey === breathKey)
+)
+
   ? 'border-yellow-400 shadow-[0_0_0_2px_rgba(250,204,21,0.9)] z-20'
       : 'border-zinc-800 hover:border-zinc-700'
   }
@@ -586,13 +594,15 @@ className={`
         setEditedSubtitle(v);
       }}
       onBlur={() => {
-        if (breathKey && onUpdateBreathGroupSubtitle) {
-          onUpdateBreathGroupSubtitle(breathKey, breathEditText ?? '');
-          return;
-        }
+  if (breathKey && onUpdateBreathGroupSubtitle) {
+    // 묶음 오디오는 자막을 건드리지 않음
+    onUpdateBreathGroupSubtitle(breathKey, breathEditText ?? '');
+    return;
+  }
 
-        onUpdateSubtitle(scene.id, editedSubtitle);
-      }}
+  onUpdateSubtitle(scene.id, editedSubtitle);
+}}
+
       className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-3 text-[12px] text-zinc-200 font-bold focus:border-emerald-500/50 outline-none resize-none leading-relaxed"
       rows={3}
       autoFocus
