@@ -159,7 +159,27 @@ ipcMain.handle('export:cancel', async (e, { jobId }) => {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);   // 🔥 기본 메뉴(File, Edit…) 제거
   createWindow();
-  autoUpdater.checkForUpdatesAndNotify();
+autoUpdater.autoDownload = true;
+
+autoUpdater.on("update-available", () => {
+  console.log("Update available");
+});
+
+autoUpdater.on("update-downloaded", () => {
+  dialog.showMessageBox({
+    type: "info",
+    title: "업데이트 완료",
+    message: "업데이트가 다운로드되었습니다.\n지금 재시작하면 최신 버전이 적용됩니다.",
+    buttons: ["재시작", "나중에"]
+  }).then(result => {
+    if (result.response === 0) {
+      autoUpdater.quitAndInstall();
+    }
+  });
+});
+
+autoUpdater.checkForUpdates();
+
 });
 
 app.on('window-all-closed', () => {
