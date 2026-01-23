@@ -19,32 +19,29 @@ app.setName('노깡 STUDIO');
 
 
 function createWindow() {
-  const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    title: '노깡 STUDIO',
-    backgroundColor: '#000000',
-    icon: path.join(__dirname, 'icon.ico'),
-    autoHideMenuBar: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      scrollBounce: false,
-    },
-  });
+const win = new BrowserWindow({
+  width: 1280,
+  height: 800,
+  title: '노깡 STUDIO',
+  backgroundColor: '#000000',
+  icon: path.join(process.resourcesPath, "build/icon.ico"),
+  autoHideMenuBar: true,
+  webPreferences: {
+    preload: path.join(__dirname, 'preload.js'),
+    contextIsolation: true,
+    nodeIntegration: false,
+    scrollBounce: false,
+  },
+});
 
-  const isDev = !app.isPackaged;
+const isDev = !app.isPackaged;
 
 if (isDev) {
   win.loadURL("http://localhost:3000");
 } else {
-  const indexUrl = new URL(
-    "../dist/index.html",
-    `file://${__dirname}/`
-  ).toString();
-  win.loadURL(indexUrl);
+win.loadFile(path.join(app.getAppPath(), "dist/index.html"));
 }
+
 
 }
 
